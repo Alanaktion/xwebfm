@@ -6,6 +6,7 @@
     busy = false,
     error = '',
     submitLabel = 'Apply',
+    danger = false,
     onsubmit,
     onclose,
     children,
@@ -14,6 +15,7 @@
     busy?: boolean
     error?: string
     submitLabel?: string
+    danger?: boolean
     onsubmit: () => void
     onclose: () => void
     children: Snippet
@@ -35,10 +37,10 @@
   >
     <h2>{title}</h2>
     {@render children()}
-    {#if error}<p class="error">{error}</p>{/if}
+    {#if error}<p class="error" style="white-space: pre-line">{error}</p>{/if}
     <div class="actions">
       <button type="button" onclick={() => dialog.close()}>Cancel</button>
-      <button type="submit" class="primary" disabled={busy}>{submitLabel}</button>
+      <button type="submit" class="primary" class:danger disabled={busy}>{submitLabel}</button>
     </div>
   </form>
 </dialog>

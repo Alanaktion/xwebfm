@@ -11,6 +11,7 @@ package fsops
 
 import (
 	"errors"
+	"fmt"
 	"path"
 	"strings"
 	"time"
@@ -85,21 +86,75 @@ const (
 	ReflinkNever ReflinkMode = "never"
 )
 
-// CopyOptions controls Copy.
+// OwnerPolicy decides who owns files created by Copy, Move, Mkdir and
+// WriteFile.
+type OwnerPolicy string
+
+const (
+	// OwnerKeep keeps the source's owner and group (Copy, Move). For newly
+	// created files (Mkdir, WriteFile) it means the server process (root).
+	OwnerKeep OwnerPolicy = "keep"
+	// OwnerInherit takes the owner and group of the destination directory,
+	// e.g. handing files to the user whose home directory they land in.
+	OwnerInherit OwnerPolicy = "inherit"
+	// OwnerSet uses the explicit UID and/or GID in the options; an ID of -1
+	// falls back to OwnerKeep for that ID.
+	OwnerSet OwnerPolicy = "set"
+)
+
+// Ownership is embedded in options that create or relocate files.
+type Ownership struct {
+	Owner OwnerPolicy
+	UID   int // used with OwnerSet; -1 for unchanged
+	GID   int // used with OwnerSet; -1 for unchanged
+}
+
+// CopyOptions controls Copy. Copies are recursive and preserve mode and
+// timestamps (like cp -a). When the owner changes, setuid/setgid bits are
+// cleared from regular files.
 type CopyOptions struct {
+	Ownership
 	Reflink ReflinkMode
-	// Preserve copies owner, group, full mode and timestamps from the source.
-	// Without it the new file is owned by the server process (normally root)
-	// and gets the source's permission bits without setuid/setgid/sticky.
-	Preserve bool
-	// Overwrite allows replacing an existing destination file.
+	// Overwrite replaces existing files (unlinking them first, so hard links
+	// elsewhere are untouched) and merges into existing directories.
 	Overwrite bool
 }
 
 // CopyResult reports what Copy actually did.
 type CopyResult struct {
-	Reflinked bool  `json:"reflinked"`
+	Files     int   `json:"files"`
+	Dirs      int   `json:"dirs"`
+	Reflinked int   `json:"reflinked"` // files whose data was shared via FICLONE
+	Skipped   int   `json:"skipped"`   // sockets, which can't be copied
 	Bytes     int64 `json:"bytes"`
+}
+
+// MoveOptions controls Move. With OwnerKeep (or empty) ownership is left
+// untouched; any other policy re-owns the moved tree recursively.
+type MoveOptions struct {
+	Ownership
+	Overwrite bool
+}
+
+// MoveResult reports what Move did.
+type MoveResult struct {
+	// Copied is set when src and dst were on different filesystems, so the
+	// tree was copied and the source removed.
+	Copied bool        `json:"copied"`
+	Copy   *CopyResult `json:"copy,omitempty"`
+}
+
+// MkdirOptions controls Mkdir. The default owner policy is OwnerInherit.
+type MkdirOptions struct {
+	Ownership
+	Mode uint32 // default 0755
+}
+
+// WriteOptions controls WriteFile. The default owner policy is OwnerInherit.
+type WriteOptions struct {
+	Ownership
+	Mode      uint32 // default 0644
+	Overwrite bool
 }
 
 // CleanPath normalises a client-supplied path to an absolute, root-relative
@@ -116,4 +171,27 @@ func relPath(p string) string {
 		return "."
 	}
 	return rel
+}
+
+// ValidName reports whether name is usable as a single path component.
+func ValidName(name string) error {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\x00") {
+		return fmt.Errorf("%w: invalid name %q", ErrInvalidArgument, name)
+	}
+	return nil
+}
+
+func (o Ownership) validate(def OwnerPolicy) (Ownership, error) {
+	switch o.Owner {
+	case "":
+		o.Owner = def
+	case OwnerKeep, OwnerInherit:
+	case OwnerSet:
+		if o.UID < -1 || o.GID < -1 || (o.UID == -1 && o.GID == -1) {
+			return o, fmt.Errorf("%w: owner policy \"set\" needs a uid and/or gid", ErrInvalidArgument)
+		}
+	default:
+		return o, fmt.Errorf("%w: unknown owner policy %q", ErrInvalidArgument, o.Owner)
+	}
+	return o, nil
 }

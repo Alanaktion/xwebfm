@@ -4,9 +4,15 @@
   import { modeString, octal } from './format'
   import Modal from './Modal.svelte'
 
-  let { entry, onclose, ondone }: { entry: Entry; onclose: () => void; ondone: (msg: string) => void } = $props()
+  let {
+    entries,
+    onclose,
+    ondone,
+  }: { entries: Entry[]; onclose: () => void; ondone: (msg: string, error?: boolean) => void } = $props()
 
-  let mode = $state(untrack(() => octal(entry.mode)))
+  let label = $derived(entries.length === 1 ? entries[0].name : `${entries.length} items`)
+
+  let mode = $state(untrack(() => octal(entries[0].mode)))
   let recursive = $state(false)
   let busy = $state(false)
   let error = $state('')
@@ -42,21 +48,28 @@
     }
     busy = true
     error = ''
-    try {
-      await api.chmod({ path: entry.path, mode, recursive })
-      ondone(`Mode of ${entry.name} set to ${mode}`)
-    } catch (e) {
-      error = (e as Error).message
-    } finally {
-      busy = false
+    const failures: string[] = []
+    for (const e of entries) {
+      try {
+        await api.chmod({ path: e.path, mode, recursive: recursive && e.type === 'dir' })
+      } catch (err) {
+        failures.push(`${e.name}: ${(err as Error).message}`)
+      }
     }
+    busy = false
+    if (failures.length) {
+      error = failures.join('\n')
+      if (failures.length < entries.length) ondone(`Changed ${entries.length - failures.length} of ${entries.length}`, true)
+      return
+    }
+    ondone(`Mode of ${label} set to ${mode}`)
   }
 </script>
 
-<Modal title="Change mode: {entry.name}" {busy} {error} onsubmit={submit} {onclose}>
+<Modal title="Change mode: {label}" {busy} {error} onsubmit={submit} {onclose}>
   <label for="mode">Octal mode</label>
   <input id="mode" class="mono" bind:value={mode} size="6" autocomplete="off" />
-  {#if value !== null}<code class="preview">{modeString(entry.type, value)}</code>{/if}
+  {#if value !== null}<code class="preview">{modeString(entries[0].type, value)}</code>{/if}
 
   <table class="grid">
     <tbody>
@@ -89,7 +102,7 @@
     </tbody>
   </table>
 
-  {#if entry.type === 'dir'}
+  {#if entries.some((e) => e.type === 'dir')}
     <label class="check"><input type="checkbox" bind:checked={recursive} /> Apply recursively (symlinks are skipped)</label>
   {/if}
 </Modal>

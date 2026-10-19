@@ -4,6 +4,7 @@
   --muted: #6b7280;
   --border: #e3e5e8;
   --hover: #f3f4f6;
+  --selected: #dbeafe;
   --accent: #2563eb;
   --danger: #b91c1c;
   --ok: #15803d;
@@ -18,6 +19,7 @@
     --muted: #9ca3af;
     --border: #2c3036;
     --hover: #1f2329;
+    --selected: #1e3a5f;
     --accent: #60a5fa;
     --danger: #f87171;
     --ok: #4ade80;
@@ -37,6 +39,7 @@ button {
 }
 button:hover { background: var(--hover); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary.danger { background: var(--danger); border-color: var(--danger); }
 button:disabled { opacity: 0.5; cursor: default; }
 input, select {
   font: inherit;

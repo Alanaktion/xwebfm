@@ -10,13 +10,37 @@ reflink copies.
 > similar) and keep it bound to localhost. Anyone who can reach it has root
 > access to the exposed filesystem.
 
-## Features (so far)
+## Features
 
-- Browse directories with type, size, mode, owner/group and mtime
-- `chown` by name or ID, optionally recursive
-- `chmod` with an octal / checkbox editor, optionally recursive
-- Copy files with reflink control (`auto`, `always`, `never`) and optional
-  preservation of owner, mode and timestamps
+- Two-pane layout (Midnight Commander style), each browsing its own directory
+- Multi-select with click, Ctrl/Cmd-click, Shift-click, Shift+arrows,
+  Space/Insert and Ctrl+A
+- Drag and drop between panes and onto folders (a drag within a pane moves,
+  between panes copies; Ctrl/Alt forces copy, Shift forces move). Dropping
+  files from the desktop uploads them
+- Recursive copy and move with an ownership policy:
+  - **keep**: keep the source's owner
+  - **inherit**: take the owner of the destination folder (the default when
+    it's owned by someone else, e.g. handing files to another user)
+  - **set**: an explicit user and/or group
+- Reflink control for copies (`auto`, `always`, `never`); moves are atomic
+  renames within a filesystem and fall back to copy + delete across them
+- Rename, new folder, delete, upload, and download (folders as `.tar.gz`)
+- `chown` and `chmod`, optionally recursive
+
+When ownership changes on copy, setuid/setgid bits are cleared from regular
+files so a copy never becomes a setuid binary for its new owner.
+
+### Keyboard
+
+| Key | Action |
+| --- | --- |
+| Tab | Switch pane |
+| ↑ ↓ PgUp PgDn Home End | Move cursor (Shift extends the selection) |
+| Enter / Backspace | Open / go up |
+| Space, Insert | Toggle selection of cursor row |
+| Ctrl+A / Esc | Select all / clear selection |
+| F2 F3 F5 F6 F7 F8 | Rename, download, copy, move, new folder, delete |
 
 ## Layout
 
@@ -53,14 +77,22 @@ checks; run `sudo go test ./internal/...` to cover ownership changes.
 
 All endpoints return JSON; errors look like
 `{"error": {"code": "not_found", "message": "..."}}`. POST requests must use
-`Content-Type: application/json`.
+`Content-Type: application/json` (uploads instead send an `X-Requested-With`
+header). `dst` is always the full destination path. "owner…" means
+`"owner": "keep|inherit|set"` plus `uid`/`user` and `gid`/`group` for `set`.
 
 | Method | Path | Body / query |
 | --- | --- | --- |
 | GET | `/api/v1/fs/list` | `?path=/dir` |
 | GET | `/api/v1/fs/stat` | `?path=/file` |
+| GET | `/api/v1/fs/download` | `?path=` (files support ranges; directories stream as `.tar.gz`) |
 | POST | `/api/v1/fs/chown` | `{"path", "uid" or "user", "gid" or "group", "recursive"}` |
 | POST | `/api/v1/fs/chmod` | `{"path", "mode": "0755", "recursive"}` |
-| POST | `/api/v1/fs/copy` | `{"src", "dst", "reflink": "auto\|always\|never", "preserve", "overwrite"}` → `{"reflinked", "bytes", "entry"}` |
+| POST | `/api/v1/fs/copy` | `{"src", "dst", "reflink": "auto\|always\|never", "overwrite", owner…}` → counts of files, dirs, reflinked, bytes |
+| POST | `/api/v1/fs/move` | `{"src", "dst", "overwrite", owner…}` |
+| POST | `/api/v1/fs/rename` | `{"path", "name"}` |
+| POST | `/api/v1/fs/mkdir` | `{"path", "mode", owner…}` (owner defaults to `inherit`) |
+| POST | `/api/v1/fs/delete` | `{"path"}` (recursive) |
+| POST | `/api/v1/fs/upload` | multipart; `?dir=&overwrite=&owner=` (owner defaults to `inherit`) |
 | GET | `/api/v1/users`, `/api/v1/groups` | |
 | GET | `/healthz` | |

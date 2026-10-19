@@ -3,9 +3,7 @@
 package fsops
 
 import (
-	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -105,113 +103,60 @@ func walk(fd int, p string, recursive bool, fn func(fd int, p string, st *unix.S
 	return nil
 }
 
-// Copy copies the regular file src to dst, using a reflink (FICLONE) when
-// requested and supported. Without a reflink, data is copied with
-// copy_file_range, which may still share extents on some filesystems.
-func (f *FS) Copy(src, dst string, o CopyOptions) (res CopyResult, err error) {
-	switch o.Reflink {
-	case "":
-		o.Reflink = ReflinkAuto
-	case ReflinkAuto, ReflinkAlways, ReflinkNever:
-	default:
-		return res, fmt.Errorf("%w: unknown reflink mode %q", ErrInvalidArgument, o.Reflink)
-	}
-	src, dst = CleanPath(src), CleanPath(dst)
-	if dst == "/" {
-		return res, fmt.Errorf("%w: invalid destination", ErrInvalidArgument)
-	}
-
-	// Check the type through an O_PATH handle first so FIFOs and devices are
-	// never opened for reading, then reopen the same inode for reading.
-	spfd, err := f.open(src, unix.O_PATH|unix.O_NOFOLLOW)
-	if err != nil {
-		return res, err
-	}
-	defer unix.Close(spfd)
-	var st unix.Stat_t
-	if err := unix.Fstat(spfd, &st); err != nil {
-		return res, &fs.PathError{Op: "stat", Path: src, Err: err}
-	}
-	if st.Mode&unix.S_IFMT != unix.S_IFREG {
-		return res, &fs.PathError{Op: "copy", Path: src, Err: ErrNotRegular}
-	}
-	sfd, err := unix.Open(procPath(spfd), unix.O_RDONLY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return res, &fs.PathError{Op: "open", Path: src, Err: err}
-	}
-	srcFile := os.NewFile(uintptr(sfd), src)
-	defer srcFile.Close()
-
-	pfd, err := f.open(path.Dir(dst), unix.O_PATH|unix.O_DIRECTORY)
-	if err != nil {
-		return res, err
-	}
-	defer unix.Close(pfd)
-	name := path.Base(dst)
-
-	flags := unix.O_WRONLY | unix.O_CREAT | unix.O_NOFOLLOW | unix.O_CLOEXEC
-	if o.Overwrite {
-		var dst2 unix.Stat_t
-		if unix.Fstatat(pfd, name, &dst2, unix.AT_SYMLINK_NOFOLLOW) == nil &&
-			dst2.Dev == st.Dev && dst2.Ino == st.Ino {
-			return res, fmt.Errorf("%w: source and destination are the same file", ErrInvalidArgument)
+// ownerFor returns the uid and gid to give files placed in the directory
+// dpfd under policy o; -1 means "keep the source's" (or "unchanged").
+func ownerFor(o Ownership, dpfd int) (uid, gid int, err error) {
+	switch o.Owner {
+	case OwnerInherit:
+		var st unix.Stat_t
+		if err := unix.Fstat(dpfd, &st); err != nil {
+			return -1, -1, err
 		}
-		flags |= unix.O_TRUNC
-	} else {
-		flags |= unix.O_EXCL
+		return int(st.Uid), int(st.Gid), nil
+	case OwnerSet:
+		return o.UID, o.GID, nil
 	}
-	dfd, err := unix.Openat(pfd, name, flags, st.Mode&0o777)
-	if err != nil {
-		return res, &fs.PathError{Op: "create", Path: dst, Err: err}
-	}
-	dstFile := os.NewFile(uintptr(dfd), dst)
-	defer func() {
-		if cerr := dstFile.Close(); cerr != nil && err == nil {
-			err = &fs.PathError{Op: "close", Path: dst, Err: cerr}
-		}
-		if err != nil && !o.Overwrite {
-			unix.Unlinkat(pfd, name, 0)
-		}
-	}()
-
-	if o.Reflink != ReflinkNever {
-		cerr := unix.IoctlFileClone(dfd, sfd)
-		switch {
-		case cerr == nil:
-			res.Reflinked, res.Bytes = true, st.Size
-		case !reflinkUnsupported(cerr):
-			return res, &fs.PathError{Op: "reflink", Path: dst, Err: cerr}
-		case o.Reflink == ReflinkAlways:
-			return res, &fs.PathError{Op: "reflink", Path: dst, Err: fmt.Errorf("%w (%v)", ErrReflinkUnsupported, cerr)}
-		}
-	}
-	if !res.Reflinked {
-		if res.Bytes, err = io.Copy(dstFile, srcFile); err != nil {
-			return res, &fs.PathError{Op: "copy", Path: dst, Err: err}
-		}
-	}
-
-	if o.Preserve {
-		if err := unix.Fchown(dfd, int(st.Uid), int(st.Gid)); err != nil {
-			return res, &fs.PathError{Op: "chown", Path: dst, Err: err}
-		}
-		// chmod after chown, which clears setuid/setgid.
-		if err := unix.Fchmod(dfd, st.Mode&0o7777); err != nil {
-			return res, &fs.PathError{Op: "chmod", Path: dst, Err: err}
-		}
-		ts := []unix.Timespec{st.Atim, st.Mtim}
-		if err := unix.UtimesNanoAt(unix.AT_FDCWD, procPath(dfd), ts, 0); err != nil {
-			return res, &fs.PathError{Op: "utimes", Path: dst, Err: err}
-		}
-	}
-	return res, nil
+	return -1, -1, nil
 }
 
-// reflinkUnsupported reports whether a FICLONE error means "can't reflink
-// here" (different filesystems, unsupported filesystem) rather than an I/O
-// or permission failure.
-func reflinkUnsupported(err error) bool {
-	return errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.EXDEV) ||
-		errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOTTY) ||
-		errors.Is(err, unix.ENOSYS)
+// removeAt recursively removes name within dpfd without following symlinks.
+func removeAt(dpfd int, name, p string) error {
+	err := unix.Unlinkat(dpfd, name, 0)
+	if err == nil || err == unix.ENOENT {
+		return nil
+	}
+	if err != unix.EISDIR {
+		return &fs.PathError{Op: "remove", Path: p, Err: err}
+	}
+	dfd, err := unix.Openat(dpfd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return &fs.PathError{Op: "open", Path: p, Err: err}
+	}
+	dir := os.NewFile(uintptr(dfd), p)
+	names, err := dir.Readdirnames(-1)
+	if err != nil {
+		dir.Close()
+		return &fs.PathError{Op: "readdir", Path: p, Err: err}
+	}
+	for _, n := range names {
+		if err := removeAt(dfd, n, path.Join(p, n)); err != nil {
+			dir.Close()
+			return err
+		}
+	}
+	dir.Close()
+	if err := unix.Unlinkat(dpfd, name, unix.AT_REMOVEDIR); err != nil && err != unix.ENOENT {
+		return &fs.PathError{Op: "remove", Path: p, Err: err}
+	}
+	return nil
+}
+
+// openParent opens the directory containing p and returns it with p's base
+// name. p must not be the root.
+func (f *FS) openParent(p string) (int, string, error) {
+	if p == "/" {
+		return -1, "", fmt.Errorf("%w: operation not allowed on the root", ErrInvalidArgument)
+	}
+	fd, err := f.open(path.Dir(p), unix.O_PATH|unix.O_DIRECTORY)
+	return fd, path.Base(p), err
 }

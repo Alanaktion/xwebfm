@@ -4,22 +4,24 @@
   import Modal from './Modal.svelte'
 
   let {
-    entry,
+    entries,
     users,
     groups,
     onclose,
     ondone,
   }: {
-    entry: Entry
+    entries: Entry[]
     users: Account[]
     groups: Account[]
     onclose: () => void
-    ondone: (msg: string) => void
+    ondone: (msg: string, error?: boolean) => void
   } = $props()
 
+  let label = $derived(entries.length === 1 ? entries[0].name : `${entries.length} items`)
+
   // Accept either a name or a numeric ID, like chown(1).
-  let owner = $state(untrack(() => entry.user ?? String(entry.uid)))
-  let group = $state(untrack(() => entry.group ?? String(entry.gid)))
+  let owner = $state(untrack(() => entries[0].user ?? String(entries[0].uid)))
+  let group = $state(untrack(() => entries[0].group ?? String(entries[0].gid)))
   let recursive = $state(false)
   let busy = $state(false)
   let error = $state('')
@@ -43,18 +45,25 @@
       return
     }
     busy = true
-    try {
-      const e = await api.chown({ path: entry.path, uid, gid, recursive })
-      ondone(`Owner of ${entry.name} set to ${e.user ?? e.uid}:${e.group ?? e.gid}`)
-    } catch (e) {
-      error = (e as Error).message
-    } finally {
-      busy = false
+    const failures: string[] = []
+    for (const e of entries) {
+      try {
+        await api.chown({ path: e.path, uid, gid, recursive: recursive && e.type === 'dir' })
+      } catch (err) {
+        failures.push(`${e.name}: ${(err as Error).message}`)
+      }
     }
+    busy = false
+    if (failures.length) {
+      error = failures.join('\n')
+      if (failures.length < entries.length) ondone(`Changed ${entries.length - failures.length} of ${entries.length}`, true)
+      return
+    }
+    ondone(`Owner of ${label} set to ${owner.trim()}:${group.trim()}`)
   }
 </script>
 
-<Modal title="Change owner: {entry.name}" {busy} {error} onsubmit={submit} {onclose}>
+<Modal title="Change owner: {label}" {busy} {error} onsubmit={submit} {onclose}>
   <label for="owner">Owner (name or UID)</label>
   <input id="owner" list="users" bind:value={owner} autocomplete="off" />
   <datalist id="users">
@@ -67,10 +76,10 @@
     {#each groups as g}<option value={g.name}>{g.id}</option>{/each}
   </datalist>
 
-  {#if entry.type === 'symlink'}
-    <p class="note">The symlink itself is changed, not its target.</p>
+  {#if entries.some((e) => e.type === 'symlink')}
+    <p class="note">Symlinks themselves are changed, not their targets.</p>
   {/if}
-  {#if entry.type === 'dir'}
+  {#if entries.some((e) => e.type === 'dir')}
     <label class="check"><input type="checkbox" bind:checked={recursive} /> Apply recursively (symlinks are not followed)</label>
   {/if}
 </Modal>

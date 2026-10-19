@@ -3,9 +3,11 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -87,7 +89,7 @@ func TestChmodAndCopy(t *testing.T) {
 	}
 
 	var cr copyResponse
-	if code := doJSON(t, "POST", ts.URL+"/api/v1/fs/copy", `{"src":"/a","dst":"/b","preserve":true}`, &cr); code != 200 {
+	if code := doJSON(t, "POST", ts.URL+"/api/v1/fs/copy", `{"src":"/a","dst":"/b"}`, &cr); code != 200 {
 		t.Fatalf("copy: %d", code)
 	}
 	if cr.Bytes != 3 || cr.Entry.Mode != 0o600 || cr.Entry.Path != "/b" {
@@ -95,6 +97,100 @@ func TestChmodAndCopy(t *testing.T) {
 	}
 	if code := doJSON(t, "POST", ts.URL+"/api/v1/fs/copy", `{"src":"/a","dst":"/b"}`, &eb); code != 409 {
 		t.Errorf("copy conflict: %d", code)
+	}
+	if code := doJSON(t, "POST", ts.URL+"/api/v1/fs/copy", `{"src":"/a","dst":"/c","owner":"bogus"}`, &eb); code != 400 {
+		t.Errorf("bad owner policy: %d", code)
+	}
+}
+
+func TestFileManagement(t *testing.T) {
+	ts, dir := newTestServer(t)
+	os.WriteFile(filepath.Join(dir, "a"), []byte("hello world"), 0o644)
+
+	var e fsops.Entry
+	if code := doJSON(t, "POST", ts.URL+"/api/v1/fs/mkdir", `{"path":"/d"}`, &e); code != 200 || e.Type != "dir" {
+		t.Fatalf("mkdir: %d %+v", code, e)
+	}
+	var mr moveResponse
+	if code := doJSON(t, "POST", ts.URL+"/api/v1/fs/move", `{"src":"/a","dst":"/d/a"}`, &mr); code != 200 || mr.Entry.Path != "/d/a" {
+		t.Fatalf("move: %d %+v", code, mr)
+	}
+	if code := doJSON(t, "POST", ts.URL+"/api/v1/fs/rename", `{"path":"/d/a","name":"b"}`, &e); code != 200 || e.Path != "/d/b" {
+		t.Fatalf("rename: %d %+v", code, e)
+	}
+
+	res, err := http.Get(ts.URL + "/api/v1/fs/download?path=/d/b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if string(body) != "hello world" || !strings.Contains(res.Header.Get("Content-Disposition"), `filename=b`) {
+		t.Errorf("download: %q %v", body, res.Header)
+	}
+	req, _ := http.NewRequest("GET", ts.URL+"/api/v1/fs/download?path=/d/b", nil)
+	req.Header.Set("Range", "bytes=6-")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != 206 || string(body) != "world" {
+		t.Errorf("range download: %d %q", res.StatusCode, body)
+	}
+	res, err = http.Get(ts.URL + "/api/v1/fs/download?path=/d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.Header.Get("Content-Type") != "application/gzip" {
+		t.Errorf("dir download content type %q", res.Header.Get("Content-Type"))
+	}
+
+	if code := doJSON(t, "POST", ts.URL+"/api/v1/fs/delete", `{"path":"/d"}`, nil); code != 204 {
+		t.Errorf("delete: %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "d")); !os.IsNotExist(err) {
+		t.Errorf("delete left %v", err)
+	}
+}
+
+func TestUpload(t *testing.T) {
+	ts, dir := newTestServer(t)
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, _ := mw.CreateFormFile("file", "up.txt")
+	fw.Write([]byte("uploaded"))
+	mw.Close()
+
+	post := func(header bool) *http.Response {
+		req, _ := http.NewRequest("POST", ts.URL+"/api/v1/fs/upload?dir=/", bytes.NewReader(buf.Bytes()))
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		if header {
+			req.Header.Set("X-Requested-With", "xwebfm")
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	if res := post(false); res.StatusCode != http.StatusUnsupportedMediaType {
+		t.Errorf("upload without CSRF header: %d", res.StatusCode)
+	}
+	res := post(true)
+	var entries []fsops.Entry
+	json.NewDecoder(res.Body).Decode(&entries)
+	res.Body.Close()
+	if res.StatusCode != 200 || len(entries) != 1 || entries[0].Path != "/up.txt" {
+		t.Fatalf("upload: %d %+v", res.StatusCode, entries)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "up.txt")); string(got) != "uploaded" {
+		t.Errorf("uploaded contents %q", got)
+	}
+	if res := post(true); res.StatusCode != 409 {
+		t.Errorf("upload conflict: %d", res.StatusCode)
 	}
 }
 

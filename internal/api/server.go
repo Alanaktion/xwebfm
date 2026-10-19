@@ -33,6 +33,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/fs/chown", s.handleChown)
 	mux.HandleFunc("POST /api/v1/fs/chmod", s.handleChmod)
 	mux.HandleFunc("POST /api/v1/fs/copy", s.handleCopy)
+	mux.HandleFunc("POST /api/v1/fs/move", s.handleMove)
+	mux.HandleFunc("POST /api/v1/fs/rename", s.handleRename)
+	mux.HandleFunc("POST /api/v1/fs/delete", s.handleDelete)
+	mux.HandleFunc("POST /api/v1/fs/mkdir", s.handleMkdir)
+	mux.HandleFunc("POST /api/v1/fs/upload", s.handleUpload)
+	mux.HandleFunc("GET /api/v1/fs/download", s.handleDownload)
 	mux.HandleFunc("GET /api/v1/users", s.handleUsers)
 	mux.HandleFunc("GET /api/v1/groups", s.handleGroups)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
@@ -69,7 +75,7 @@ func (s *Server) writeFSError(w http.ResponseWriter, r *http.Request, err error)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		status, code = http.StatusNotFound, "not_found"
-	case errors.Is(err, fs.ErrExist):
+	case errors.Is(err, fs.ErrExist), errors.Is(err, syscall.ENOTEMPTY):
 		status, code = http.StatusConflict, "exists"
 	case errors.Is(err, fs.ErrPermission):
 		status, code = http.StatusForbidden, "permission_denied"
