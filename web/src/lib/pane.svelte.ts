@@ -3,7 +3,7 @@ import { api, type Entry, type FindResult, type FSInfo } from './api'
 import { joinPath, parentPath } from './format'
 import { loadSetting, persist, settings } from './settings.svelte'
 
-export type SortKey = 'name' | 'size' | 'mode' | 'owner' | 'mtime'
+export type SortKey = 'name' | 'size' | 'disk' | 'mode' | 'owner' | 'mtime'
 export type CompareStatus = 'only' | 'diff' | 'same'
 
 /** Compares an entry with a same-named entry in the other pane (if any). */
@@ -65,6 +65,8 @@ export class PaneState {
       switch (key) {
         case 'size':
           return size(a) - size(b)
+        case 'disk':
+          return a.disk - b.disk
         case 'mode':
           return a.mode - b.mode
         case 'owner':

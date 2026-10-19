@@ -71,6 +71,11 @@ files so a copy never becomes a setuid binary for its new owner.
 | Ctrl+L | Type a path (Tab completes folder names) |
 | Letters, `/` | Filter the pane by name (Esc clears) |
 | Ctrl+H / Ctrl+= | Toggle hidden files / compare panes |
+| Ctrl+/ or ? | Keyboard shortcut guide |
+
+Which columns the listings show (Size, On disk, Mode, Owner, Modified) is
+chosen with the Columns button or by right-clicking a column header, and
+remembered in the browser.
 
 ### Viewing and editing
 

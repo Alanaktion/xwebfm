@@ -11,6 +11,8 @@
   import LinkDialog from './lib/LinkDialog.svelte'
   import ViewerDialog from './lib/ViewerDialog.svelte'
   import Sidebar from './lib/Sidebar.svelte'
+  import ColumnsDialog from './lib/ColumnsDialog.svelte'
+  import ShortcutsDialog from './lib/ShortcutsDialog.svelte'
   import { persist, settings } from './lib/settings.svelte'
   import { compareStatus } from './lib/pane.svelte'
   import { isFinished, JobsStore } from './lib/jobs.svelte'
@@ -38,6 +40,8 @@
     | { kind: 'props'; path: string }
     | { kind: 'link'; entries: Entry[] }
     | { kind: 'view'; entry: Entry; edit: boolean }
+    | { kind: 'columns' }
+    | { kind: 'shortcuts' }
     | { kind: 'find'; root: string; rootOwner: string }
 
   // Both pane directories live in the URL hash (#l=/a&r=/b) so reloads keep them.
@@ -235,6 +239,11 @@
       pane.selectAll()
       return
     }
+    if ((ctrl && ev.key === '/') || (!ctrl && ev.key === '?')) {
+      ev.preventDefault()
+      dialog = { kind: 'shortcuts' }
+      return
+    }
     if (ctrl && (ev.key === 'l' || ev.key === 'h' || ev.key === '=')) {
       ev.preventDefault()
       if (ev.key === 'l') pane.editingPath = true
@@ -332,6 +341,7 @@
           ondrop={(dir, payload, mods) => onDrop(i, dir, payload, mods)}
           onupload={upload}
           onopen={(row) => openRow(p, row)}
+          oncolumns={() => (dialog = { kind: 'columns' })}
         />
       {/each}
     </div>
@@ -341,7 +351,7 @@
 
   <footer>
     <div class="status" class:error={status?.error} title={status?.text}>
-      {#if status}{status.text}{:else}<span class="muted">Tab switches panes · Space/Insert selects · drag to copy or move (Ctrl copies, Shift moves)</span>{/if}
+      {#if status}{status.text}{:else}<span class="muted">Tab switches panes · Space/Insert selects · drag to copy or move · Ctrl+/ for all shortcuts</span>{/if}
     </div>
     <div class="keys">
       <button onclick={actions.rename} disabled={targets.length !== 1}><kbd>F2</kbd>Rename</button>
@@ -364,6 +374,7 @@
       <button onclick={actions.usage} title="Ctrl+U">Usage</button>
       <span class="spacer"></span>
       <button class:on={settings.sidebar} onclick={actions.toggleSidebar} title="Show places">Places</button>
+      <button onclick={() => (dialog = { kind: 'columns' })} title="Choose columns (or right-click a column header)">Columns</button>
       <button class:on={settings.showHidden} onclick={actions.toggleHidden} title="Ctrl+H">Hidden</button>
       <button class:on={comparing} onclick={actions.compare} title="Ctrl+= — highlight differences between the panes">Compare</button>
       {#if comparing}<button onclick={actions.selectDifferences}>Select differences</button>{/if}
@@ -372,6 +383,7 @@
         {#if jobs.active}<span class="count">{jobs.active}</span>{/if}
         {#if !jobs.connected}<span class="offline" title="Live updates disconnected; reconnecting">●</span>{/if}
       </button>
+      <button onclick={() => (dialog = { kind: 'shortcuts' })} title="Keyboard shortcuts (Ctrl+/)" aria-label="Keyboard shortcuts">?</button>
     </div>
   </footer>
 </div>
@@ -425,6 +437,10 @@
     onclose={() => (dialog = null)}
     onqueued={queued}
   />
+{:else if dialog?.kind === 'columns'}
+  <ColumnsDialog onclose={() => (dialog = null)} />
+{:else if dialog?.kind === 'shortcuts'}
+  <ShortcutsDialog onclose={() => (dialog = null)} />
 {:else if dialog?.kind === 'view'}
   <ViewerDialog entry={dialog.entry} edit={dialog.edit} onclose={() => (dialog = null)} ondone={(msg) => {
     status = { text: msg, error: false }

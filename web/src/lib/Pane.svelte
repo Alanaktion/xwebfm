@@ -13,6 +13,7 @@
   import { api } from './api'
   import { compareStatus, type PaneState, type Row, type SortKey } from './pane.svelte'
   import { settings } from './settings.svelte'
+  import { COLUMNS, type ColumnKey } from './columns'
 
   let {
     pane,
@@ -22,6 +23,7 @@
     ondrop,
     onupload,
     onopen,
+    oncolumns,
     compareWith = null,
   }: {
     pane: PaneState
@@ -34,6 +36,8 @@
     onupload: (dir: string, files: File[]) => void
     /** Double-click on a row. */
     onopen: (row: Row) => void
+    /** Opens the column chooser (right-click on the header). */
+    oncolumns: () => void
     /** The other pane, when comparing directories. */
     compareWith?: PaneState | null
   } = $props()
@@ -125,13 +129,12 @@
     }
   }
 
-  const columns: [SortKey, string, string][] = [
+  const columnClass: Record<ColumnKey, string> = { size: 'num', disk: 'num', mode: '', owner: '', mtime: 'date' }
+  let shown = $derived(COLUMNS.filter((c) => settings.columns[c.key]))
+  let columns = $derived<[SortKey, string, string][]>([
     ['name', 'Name', ''],
-    ['size', 'Size', 'num'],
-    ['mode', 'Mode', ''],
-    ['owner', 'Owner', ''],
-    ['mtime', 'Modified', 'date'],
-  ]
+    ...shown.map((c): [SortKey, string, string] => [c.key, c.label, columnClass[c.key]]),
+  ])
 
   const icon: Record<string, string> = { dir: '📁', symlink: '🔗', file: '📄' }
   const fmtDate = (s: string) => new Date(s).toLocaleString()
@@ -296,7 +299,13 @@
       </div>
     {/if}
     <table class:hidden={pane.stale && !pane.results}>
-      <thead>
+      <thead
+        oncontextmenu={(ev) => {
+          ev.preventDefault()
+          oncolumns()
+        }}
+        title="Right-click to choose columns"
+      >
         <tr>
           {#each columns as [key, label, cls]}
             <th class={cls} aria-sort={pane.sort.key === key ? (pane.sort.desc ? 'descending' : 'ascending') : 'none'}>
@@ -333,24 +342,33 @@
                 {pane.results ? relative(e.path) : e.name}{#if e.type === 'dir'}/{/if}
                 {#if e.linkTarget}<span class="muted">→ {e.linkTarget}</span>{/if}
               </td>
-              <td class="num">
-                {#if e.type !== 'dir'}{humanSize(e.size)}{:else if pane.dirSizes.has(e.path)}<span
-                    class="computed"
-                    title="Total size from the last disk-usage scan">{humanSize(pane.dirSizes.get(e.path)!)}</span
-                  >{/if}
-              </td>
-              <td class="mono" title={octal(e.mode) + (e.acl ? ' + ACL' : '')}>{modeString(e.type, e.mode)}{e.acl ? '+' : ''}</td>
-              <td
-                class="mono"
-                class:mismatch={mismatch(e)}
-                class:orphan={!e.user || !e.group}
-                title={ownerNote(e)}
-              >
-                {e.user ?? e.uid}:{e.group ?? e.gid}
-              </td>
-              <td class="muted date">{fmtDate(e.mtime)}</td>
+              {#each shown as c (c.key)}
+                {#if c.key === 'size'}
+                  <td class="num">
+                    {#if e.type !== 'dir'}{humanSize(e.size)}{:else if pane.dirSizes.has(e.path)}<span
+                        class="computed"
+                        title="Total size from the last disk-usage scan">{humanSize(pane.dirSizes.get(e.path)!)}</span
+                      >{/if}
+                  </td>
+                {:else if c.key === 'disk'}
+                  <td class="num muted">{humanSize(e.disk)}</td>
+                {:else if c.key === 'mode'}
+                  <td class="mono" title={octal(e.mode) + (e.acl ? ' + ACL' : '')}>{modeString(e.type, e.mode)}{e.acl ? '+' : ''}</td>
+                {:else if c.key === 'owner'}
+                  <td
+                    class="mono"
+                    class:mismatch={mismatch(e)}
+                    class:orphan={!e.user || !e.group}
+                    title={ownerNote(e)}
+                  >
+                    {e.user ?? e.uid}:{e.group ?? e.gid}
+                  </td>
+                {:else}
+                  <td class="muted date">{fmtDate(e.mtime)}</td>
+                {/if}
+              {/each}
             {:else}
-              <td class="name" colspan="5"><span aria-hidden="true">📁</span> ..</td>
+              <td class="name" colspan={1 + shown.length}><span aria-hidden="true">📁</span> ..</td>
             {/if}
           </tr>
         {/each}

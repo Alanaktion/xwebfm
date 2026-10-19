@@ -17,7 +17,11 @@ export function persist(key: string, value: unknown) {
   }
 }
 
+import { defaultColumns } from './columns'
+
 export const settings = $state({
+  // Merged over the defaults so columns added later get their default.
+  columns: { ...defaultColumns(), ...read('columns', {}) },
   showHidden: read('showHidden', true),
   sidebar: read('sidebar', true),
   bookmarks: read<string[]>('bookmarks', []),
