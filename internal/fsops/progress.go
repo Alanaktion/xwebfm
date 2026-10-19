@@ -59,6 +59,18 @@ func (p *Progress) entryDone() {
 	}
 }
 
+func (p *Progress) setBytes(n int64) {
+	if p != nil {
+		p.bytes.Store(n)
+	}
+}
+
+func (p *Progress) addEntries(n int64) {
+	if p != nil {
+		p.entries.Add(n)
+	}
+}
+
 func (p *Progress) addBytes(n int64) {
 	if p != nil {
 		p.bytes.Add(n)

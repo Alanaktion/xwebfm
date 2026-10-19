@@ -40,3 +40,12 @@ func (f *FS) Move(ctx context.Context, src, dst string, o MoveOptions) (MoveResu
 func (f *FS) WriteFile(dir, name string, r io.Reader, o WriteOptions) (Entry, error) {
 	return Entry{}, errUnsupported
 }
+func (f *FS) Extract(ctx context.Context, archive, destDir string, o ExtractOptions) (ExtractResult, error) {
+	return ExtractResult{}, errUnsupported
+}
+func (f *FS) CreateArchive(ctx context.Context, sources []string, dst string, o CreateArchiveOptions) (Entry, error) {
+	return Entry{}, errUnsupported
+}
+
+// SevenZipAvailable reports whether .7z archives can be created.
+func SevenZipAvailable() bool { return false }

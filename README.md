@@ -27,6 +27,11 @@ reflink copies.
   renames within a filesystem and fall back to copy + delete across them
 - Rename, new folder, delete, upload, and download (folders as `.tar.gz`)
 - `chown` and `chmod`, optionally recursive
+- Archive extraction (zip, 7z, rar including multi-volume, tar, tar.gz/tgz,
+  tar.bz2, tar.xz, tar.zst, and plain .gz/.bz2/.xz/.zst) with optional
+  passwords for 7z/rar, and archive creation (zip, tar, tar.gz, tar.bz2,
+  tar.xz, tar.zst, plus 7z when the 7-Zip binary is installed). Both can
+  delete the originals once they succeed
 - A background job queue for copy, move, delete and recursive chown/chmod,
   with live progress (bytes, items, speed, time left) and cancel, pushed to
   the browser over a WebSocket. Panes refresh automatically when a job or
@@ -46,6 +51,32 @@ files so a copy never becomes a setuid binary for its new owner.
 | Ctrl+A / Esc | Select all / clear selection |
 | F2 F3 F5 F6 F7 F8 | Rename, download, copy, move, new folder, delete |
 
+## Archives
+
+Extraction uses pure-Go readers and writes every entry through directory
+file descriptors, so an archive can never write outside its extraction:
+
+- Entries are unpacked into a hidden temporary folder in the destination.
+  If the archive holds a single top-level item it is moved into the
+  destination as is; otherwise the folder is renamed after the archive
+  (`photos.zip` → `photos/`, or `photos (2)/` if that exists). A failed or
+  cancelled extraction leaves nothing behind.
+- Absolute and `..` entry names are skipped, no path is ever written through
+  a symlink (including symlinks the archive itself creates), hard links may
+  only point at files inside the same extraction, device nodes/FIFOs are
+  skipped and setuid/setgid bits are cleared. Skipped entries are reported.
+- New files inherit the destination folder's owner by default; "keep" uses
+  the owner recorded in tar headers.
+- For multi-volume archives (`name.part1.rar`, `name.r00`, `name.7z.001`,
+  `name.zip.001`) select any volume; "delete originals" removes every volume
+  that was read.
+
+Archives are written to a temporary file and renamed into place; originals
+are deleted only after that succeeds. The Go writers read sources through
+file descriptors like every other operation. 7z archives are created by the
+`7zz`/`7z`/`7za` binary (detected at startup) with `-snl`, so symlinks are
+stored rather than followed, but 7-Zip walks subdirectories by path itself.
+
 ## Jobs
 
 Long operations run as jobs: `-jobs N` (default 2) run at once and the rest
@@ -62,7 +93,7 @@ stops part-way, and changes already made remain.
 | Path | Purpose |
 | --- | --- |
 | `cmd/xwebfm` | Entry point: flags, HTTP server, graceful shutdown |
-| `internal/fsops` | Filesystem operations, independent of HTTP |
+| `internal/fsops` | Filesystem operations and archive reading/writing, independent of HTTP |
 | `internal/jobs` | In-memory job queue, workers, progress and event fan-out |
 | `internal/api` | JSON API and WebSocket over `fsops` and `jobs` |
 | `web/` | Svelte 5 + TypeScript SPA (Vite); `web/dist` is embedded into the binary |
@@ -116,8 +147,9 @@ header). `dst` is always the full destination path. "owner…" means
 | POST | `/api/v1/fs/delete` | `{"path"}` (recursive) |
 | POST | `/api/v1/fs/upload` | multipart; `?dir=&overwrite=&owner=` (owner defaults to `inherit`) |
 | GET | `/api/v1/users`, `/api/v1/groups` | |
-| POST | `/api/v1/jobs` | `{"kind": "copy\|move", "items": [{"src", "dst"}], …}` or `{"kind": "delete\|chown\|chmod", "paths": [...], …}` with the same options as the synchronous endpoints → 202 + job |
+| POST | `/api/v1/jobs` | `{"kind": "copy\|move", "items": [{"src", "dst"}], …}` or `{"kind": "delete\|chown\|chmod", "paths": [...], …}` with the same options as the synchronous endpoints; `{"kind": "extract", "items": [{"src": archive, "dst": dir}], "password", "deleteOriginals", owner…}`; `{"kind": "archive", "paths": [...], "dst": file, "format", "overwrite", "deleteOriginals", owner…}` → 202 + job |
 | GET | `/api/v1/jobs` | all jobs |
+| GET | `/api/v1/info` | capabilities, e.g. `{"archive": {"create": ["zip", …, "7z"]}}` |
 | POST | `/api/v1/jobs/{id}/cancel`, `/api/v1/jobs/{id}/dismiss`, `/api/v1/jobs/clear` | |
 | GET | `/api/v1/ws` | WebSocket event stream (see below) |
 | GET | `/healthz` | |

@@ -1,10 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { api, ApiError, type Account, type Entry, type Job } from './lib/api'
-  import { humanSize } from './lib/format'
-  import { JobsStore } from './lib/jobs.svelte'
+  import { archiveInfo, humanSize } from './lib/format'
+  import ExtractDialog from './lib/ExtractDialog.svelte'
+  import ArchiveDialog from './lib/ArchiveDialog.svelte'
+  import { isFinished, JobsStore } from './lib/jobs.svelte'
   import JobsPanel from './lib/JobsPanel.svelte'
-  import { PaneState } from './lib/pane.svelte'
+  import { PaneState, type Row } from './lib/pane.svelte'
   import Pane, { type DragPayload } from './lib/Pane.svelte'
   import ChownDialog from './lib/ChownDialog.svelte'
   import ChmodDialog from './lib/ChmodDialog.svelte'
@@ -20,6 +22,8 @@
     | { kind: 'delete'; entries: Entry[] }
     | { kind: 'chown'; entries: Entry[] }
     | { kind: 'chmod'; entries: Entry[] }
+    | { kind: 'extract'; archives: Entry[] }
+    | { kind: 'archive'; sources: Entry[] }
 
   // Both pane directories live in the URL hash (#l=/a&r=/b) so reloads keep them.
   const hash = new URLSearchParams(location.hash.slice(1))
@@ -31,6 +35,7 @@
   let groups = $state<Account[]>([])
   let uploadInput: HTMLInputElement
   let jobsOpen = $state(false)
+  let createFormats = $state<string[]>([])
 
   const jobs = new JobsStore({
     onchanged: (dirs) => {
@@ -51,6 +56,7 @@
   let pane = $derived(panes[active])
   let other = $derived(panes[1 - active])
   let targets = $derived(pane.targets())
+  let archives = $derived(targets.filter((t) => t.type === 'file' && archiveInfo(t.name)))
 
   $effect(() => {
     const params = new URLSearchParams({ l: panes[0].path, r: panes[1].path })
@@ -60,6 +66,7 @@
   onMount(() => {
     jobs.connect()
     panes.forEach((p) => p.load())
+    api.info().then((i) => (createFormats = i.archive.create)).catch(() => {})
     api.users().then((u) => (users = u)).catch(() => {})
     api.groups().then((g) => (groups = g)).catch(() => {})
     return () => jobs.close()
@@ -68,7 +75,10 @@
   function queued(job: Job) {
     dialog = null
     jobsOpen = true
-    status = { text: `Started: ${job.title}`, error: false }
+    // A quick job may already have finished (over the WebSocket) before the
+    // submit response arrived; don't replace its result with "Started".
+    const known = jobs.jobs.find((j) => j.id === job.id)
+    if (!known || !isFinished(known.state)) status = { text: `Started: ${job.title}`, error: false }
   }
 
   function done(text: string, error = false) {
@@ -98,6 +108,17 @@
       if (entries.length) dialog = { kind: 'chmod', entries }
     },
     upload: () => uploadInput.click(),
+    extract: () => archives.length && (dialog = { kind: 'extract', archives }),
+    archive: () => targets.length && (dialog = { kind: 'archive', sources: targets }),
+  }
+
+  /** Enter or double-click: archives open the extract dialog. */
+  function openRow(p: PaneState, row: Row | undefined) {
+    if (row && !row.parent && row.entry.type === 'file' && archiveInfo(row.entry.name)) {
+      dialog = { kind: 'extract', archives: [row.entry] }
+      return
+    }
+    p.open(row)
   }
 
   function onKey(ev: KeyboardEvent) {
@@ -114,7 +135,7 @@
       PageUp: () => pane.move(-20, mode),
       Home: () => pane.move(-Infinity, mode),
       End: () => pane.move(Infinity, mode),
-      Enter: () => pane.open(pane.rows[pane.cursor]),
+      Enter: () => openRow(pane, pane.rows[pane.cursor]),
       Backspace: () => pane.path !== '/' && pane.open(pane.rows[0]),
       Escape: () => pane.selected.clear(),
       Insert: toggleCursor,
@@ -194,6 +215,7 @@
         onactivate={() => (active = i)}
         ondrop={(dir, payload, mods) => onDrop(i, dir, payload, mods)}
         onupload={upload}
+        onopen={(row) => openRow(p, row)}
       />
     {/each}
   </div>
@@ -214,6 +236,8 @@
       <button onclick={actions.chown} disabled={!targets.length}>Owner</button>
       <button onclick={actions.chmod} disabled={!targets.some((t) => t.type !== 'symlink')}>Mode</button>
       <button onclick={actions.upload}>Upload</button>
+      <button onclick={actions.extract} disabled={!archives.length}>Extract</button>
+      <button onclick={actions.archive} disabled={!targets.length || !createFormats.length}>Archive</button>
       <span class="spacer"></span>
       <button class="jobs-toggle" class:on={jobsOpen} onclick={() => (jobsOpen = !jobsOpen)} aria-expanded={jobsOpen}>
         Jobs
@@ -251,6 +275,26 @@
     {groups}
     onclose={() => (dialog = null)}
     ondone={done}
+    onqueued={queued}
+  />
+{:else if dialog?.kind === 'extract'}
+  <ExtractDialog
+    archives={dialog.archives}
+    dest={pane.path}
+    otherDir={other.path}
+    {users}
+    {groups}
+    onclose={() => (dialog = null)}
+    onqueued={queued}
+  />
+{:else if dialog?.kind === 'archive'}
+  <ArchiveDialog
+    sources={dialog.sources}
+    dir={pane.path}
+    formats={createFormats}
+    {users}
+    {groups}
+    onclose={() => (dialog = null)}
     onqueued={queued}
   />
 {:else if dialog?.kind === 'chmod'}

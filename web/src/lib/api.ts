@@ -66,7 +66,7 @@ export interface JobProgress {
 
 export interface Job {
   id: string
-  kind: 'copy' | 'move' | 'delete' | 'chown' | 'chmod'
+  kind: 'copy' | 'move' | 'delete' | 'chown' | 'chmod' | 'extract' | 'archive'
   title: string
   state: JobState
   items: { src: string; dst?: string }[]
@@ -84,6 +84,24 @@ export type JobRequest =
   | { kind: 'delete'; paths: string[] }
   | { kind: 'chown'; paths: string[]; uid?: number; gid?: number; recursive: boolean }
   | { kind: 'chmod'; paths: string[]; mode: string; recursive: boolean }
+  | ({
+      kind: 'extract'
+      items: { src: string; dst: string }[]
+      password?: string
+      deleteOriginals: boolean
+    } & OwnerFields)
+  | ({
+      kind: 'archive'
+      paths: string[]
+      dst: string
+      format: string
+      overwrite: boolean
+      deleteOriginals: boolean
+    } & OwnerFields)
+
+export interface ServerInfo {
+  archive: { create: string[] }
+}
 
 /** Events streamed over /api/v1/ws. */
 export type JobEvent =
@@ -131,6 +149,7 @@ export const api = {
   rename: (path: string, name: string) => request<Entry>('POST', '/api/v1/fs/rename', { path, name }),
   remove: (path: string) => request<null>('POST', '/api/v1/fs/delete', { path }),
   mkdir: (req: { path: string; mode?: string } & OwnerFields) => request<Entry>('POST', '/api/v1/fs/mkdir', req),
+  info: () => request<ServerInfo>('GET', '/api/v1/info'),
   users: () => request<Account[]>('GET', '/api/v1/users'),
   groups: () => request<Account[]>('GET', '/api/v1/groups'),
 

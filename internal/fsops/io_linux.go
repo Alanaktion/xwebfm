@@ -3,8 +3,6 @@
 package fsops
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -13,7 +11,6 @@ import (
 	"io/fs"
 	"os"
 	"path"
-	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -120,73 +117,12 @@ func (f *FS) WriteFile(dir, name string, r io.Reader, o WriteOptions) (e Entry, 
 // archive. Symlinks are stored as links; FIFOs, devices and sockets are
 // skipped. The archive is abandoned if ctx is cancelled.
 func (f *FS) WriteTar(ctx context.Context, p string, w io.Writer) error {
-	p = CleanPath(p)
-	fd, err := f.open(p, unix.O_PATH|unix.O_NOFOLLOW)
+	aw, err := f.newArchiveWriter(ctx, FormatTarGz, w, nil)
 	if err != nil {
 		return err
 	}
-	defer unix.Close(fd)
-	gz := gzip.NewWriter(w)
-	tw := tar.NewWriter(gz)
-	base := path.Base(p)
-	if p == "/" {
-		base = "root"
-	}
-	err = walk(ctx, fd, p, true, func(fd int, fp string, st *unix.Stat_t) error {
-		name := base
-		if fp != p {
-			name = path.Join(base, fp[len(p):])
-		}
-		return f.tarEntry(tw, fd, st, name, fp)
-	})
-	if err != nil {
+	if err := f.addTree(ctx, aw, CleanPath(p)); err != nil {
 		return err
 	}
-	if err := tw.Close(); err != nil {
-		return err
-	}
-	return gz.Close()
-}
-
-func (f *FS) tarEntry(tw *tar.Writer, fd int, st *unix.Stat_t, name, p string) error {
-	hdr := &tar.Header{
-		Name:    name,
-		Mode:    int64(st.Mode & 0o7777),
-		Uid:     int(st.Uid),
-		Gid:     int(st.Gid),
-		Uname:   f.Owners.UserName(st.Uid),
-		Gname:   f.Owners.GroupName(st.Gid),
-		ModTime: time.Unix(st.Mtim.Unix()),
-		Format:  tar.FormatPAX,
-	}
-	switch st.Mode & unix.S_IFMT {
-	case unix.S_IFDIR:
-		hdr.Typeflag, hdr.Name = tar.TypeDir, name+"/"
-		return tw.WriteHeader(hdr)
-	case unix.S_IFLNK:
-		buf := make([]byte, unix.PathMax)
-		n, err := unix.Readlinkat(fd, "", buf)
-		if err != nil {
-			return &fs.PathError{Op: "readlink", Path: p, Err: err}
-		}
-		hdr.Typeflag, hdr.Linkname = tar.TypeSymlink, string(buf[:n])
-		return tw.WriteHeader(hdr)
-	case unix.S_IFREG:
-		rfd, err := unix.Open(procPath(fd), unix.O_RDONLY|unix.O_CLOEXEC, 0)
-		if err != nil {
-			return &fs.PathError{Op: "open", Path: p, Err: err}
-		}
-		file := os.NewFile(uintptr(rfd), p)
-		defer file.Close()
-		hdr.Typeflag, hdr.Size = tar.TypeReg, st.Size
-		if err := tw.WriteHeader(hdr); err != nil {
-			return err
-		}
-		// The header promised st.Size bytes; a file that changed size while
-		// archiving can't be represented, so fail rather than corrupt it.
-		if _, err := io.CopyN(tw, file, st.Size); err != nil {
-			return &fs.PathError{Op: "read", Path: p, Err: err}
-		}
-	}
-	return nil
+	return aw.Close()
 }

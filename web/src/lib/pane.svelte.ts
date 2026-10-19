@@ -13,42 +13,64 @@ export class PaneState {
   cursor = $state(0)
   loading = $state(false)
   error = $state('')
+  /** The path whose listing is in entries; differs from path while loading a new one. */
+  loadedPath = $state<string | null>(null)
   #anchor = 0 // start of a shift-click range
+  #seq = 0 // identifies the latest load, so slower stale responses are dropped
 
-  rows: Row[] = $derived([
-    ...(this.path === '/' ? [] : [{ parent: true as const, path: parentPath(this.path) }]),
-    ...this.entries.map((entry) => ({ parent: false as const, entry })),
-  ])
+  /** Set while a new directory is loading and nothing from it can be shown yet. */
+  stale = $derived(this.loadedPath !== this.path)
+
+  rows: Row[] = $derived(
+    this.stale
+      ? []
+      : [
+          ...(this.path === '/' ? [] : [{ parent: true as const, path: parentPath(this.path) }]),
+          ...this.entries.map((entry) => ({ parent: false as const, entry })),
+        ],
+  )
 
   constructor(path = '/') {
     this.path = path
   }
 
-  async load() {
+  /** Loads (or refreshes) the listing of path. Resolves false if superseded. */
+  async load(): Promise<boolean> {
+    const seq = ++this.#seq
+    const path = this.path
     this.loading = true
     try {
-      const res = await api.list(this.path)
+      const res = await api.list(path)
+      if (seq !== this.#seq) return false
       this.path = res.path
       this.entries = res.entries
       this.error = ''
       const present = new Set(res.entries.map((e) => e.path))
       for (const p of this.selected) if (!present.has(p)) this.selected.delete(p)
     } catch (e) {
+      if (seq !== this.#seq) return false
       this.entries = []
       this.error = (e as Error).message
-    } finally {
-      this.cursor = Math.min(this.cursor, Math.max(this.rows.length - 1, 0))
-      this.loading = false
     }
+    this.loadedPath = this.path
+    this.cursor = Math.min(this.cursor, Math.max(this.rows.length - 1, 0))
+    this.loading = false
+    return true
   }
 
   navigate(path: string) {
     // When going up, put the cursor on the directory we came from.
     const from = this.path
     this.path = path
+    // Drop the old listing right away rather than showing it until the new
+    // one arrives.
+    this.entries = []
+    this.error = ''
+    this.loadedPath = null
     this.selected.clear()
     this.cursor = 0
-    this.load().then(() => {
+    this.load().then((current) => {
+      if (!current) return
       const i = this.rows.findIndex((r) => !r.parent && r.entry.path === from)
       if (i >= 0) this.cursor = i
     })

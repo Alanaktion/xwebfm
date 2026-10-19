@@ -14,15 +14,24 @@ import (
 )
 
 // jobRequest submits a background job. Which fields apply depends on Kind:
-// copy and move use Items, delete/chown/chmod use Paths.
+// copy, move and extract use Items (extract: src archive, dst directory);
+// delete, chown, chmod and archive use Paths (archive also Dst and Format).
 type jobRequest struct {
-	Kind      string            `json:"kind"`
-	Items     []jobs.Item       `json:"items"`
-	Paths     []string          `json:"paths"`
-	Reflink   fsops.ReflinkMode `json:"reflink"`
-	Overwrite bool              `json:"overwrite"`
-	Recursive bool              `json:"recursive"`
-	Mode      string            `json:"mode"`
+	Kind      string              `json:"kind"`
+	Items     []jobs.Item         `json:"items"`
+	Paths     []string            `json:"paths"`
+	Dst       string              `json:"dst"`
+	Reflink   fsops.ReflinkMode   `json:"reflink"`
+	Overwrite bool                `json:"overwrite"`
+	Recursive bool                `json:"recursive"`
+	Mode      string              `json:"mode"`
+	Format    fsops.ArchiveFormat `json:"format"`
+	// Password for encrypted archives. It is only held by the job's closure,
+	// never stored in the job's public state.
+	Password string `json:"password"`
+	// DeleteOriginals removes the archive (extract) or the sources
+	// (archive) once the job has succeeded.
+	DeleteOriginals bool `json:"deleteOriginals"`
 	ownerFields
 }
 
@@ -147,6 +156,79 @@ func (s *Server) buildJob(req jobRequest) (jobs.Spec, error) {
 			}
 		}
 
+	case "extract":
+		own, err := s.ownership(req.ownerFields)
+		if err != nil {
+			return jobs.Spec{}, err
+		}
+		if err := checkOwnership(own); err != nil {
+			return jobs.Spec{}, err
+		}
+		// Selecting several volumes of one set extracts it once.
+		seen := map[string]bool{}
+		for _, it := range req.Items {
+			info, ok := fsops.DetectArchive(path.Base(it.Src))
+			if !ok {
+				return invalid("%s is not a recognised archive", it.Src)
+			}
+			key := path.Join(path.Dir(it.Src), info.First) + "\x00" + it.Dst
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			spec.Items = append(spec.Items, it)
+			dirs = append(dirs, it.Dst)
+			if req.DeleteOriginals {
+				dirs = append(dirs, path.Dir(it.Src))
+			}
+		}
+		if len(spec.Items) == 0 {
+			return invalid("no items")
+		}
+		count = len(spec.Items)
+		opts := fsops.ExtractOptions{Ownership: own, Password: req.Password, DeleteSource: req.DeleteOriginals}
+		step = func(ctx context.Context, p *fsops.Progress, i int) error {
+			o := opts
+			o.Progress = p
+			_, err := s.FS.Extract(ctx, spec.Items[i].Src, spec.Items[i].Dst, o)
+			return err
+		}
+
+	case "archive":
+		if len(req.Paths) == 0 {
+			return invalid("no paths")
+		}
+		if req.Dst == "" {
+			return invalid("no destination")
+		}
+		if req.Format == fsops.Format7z && !fsops.SevenZipAvailable() ||
+			req.Format != fsops.Format7z && !slices.Contains(fsops.CreateFormats, req.Format) {
+			return invalid("can't create %q archives", req.Format)
+		}
+		own, err := s.ownership(req.ownerFields)
+		if err != nil {
+			return jobs.Spec{}, err
+		}
+		if err := checkOwnership(own); err != nil {
+			return jobs.Spec{}, err
+		}
+		dst := fsops.CleanPath(req.Dst)
+		for _, p := range req.Paths {
+			spec.Items = append(spec.Items, jobs.Item{Src: p, Dst: dst})
+		}
+		dirs = append(dirs, path.Dir(dst))
+		if req.DeleteOriginals {
+			dirs = append(dirs, path.Dir(req.Paths[0]))
+		}
+		count = 1
+		opts := fsops.CreateArchiveOptions{Ownership: own, Format: req.Format, Overwrite: req.Overwrite, DeleteSources: req.DeleteOriginals}
+		step = func(ctx context.Context, p *fsops.Progress, _ int) error {
+			o := opts
+			o.Progress = p
+			_, err := s.FS.CreateArchive(ctx, slices.Clone(req.Paths), dst, o)
+			return err
+		}
+
 	default:
 		return invalid("unknown job kind %q", req.Kind)
 	}
@@ -190,7 +272,10 @@ func checkOwnership(o fsops.Ownership) error {
 }
 
 func jobTitle(kind string, items []jobs.Item) string {
-	verb := map[string]string{"copy": "Copy", "move": "Move", "delete": "Delete", "chown": "Change owner of", "chmod": "Change mode of"}[kind]
+	verb := map[string]string{
+		"copy": "Copy", "move": "Move", "delete": "Delete", "chown": "Change owner of",
+		"chmod": "Change mode of", "extract": "Extract", "archive": "Archive",
+	}[kind]
 	what := path.Base(items[0].Src)
 	if items[0].Src == "/" {
 		what = "/"
@@ -198,7 +283,10 @@ func jobTitle(kind string, items []jobs.Item) string {
 	if len(items) > 1 {
 		what = fmt.Sprintf("%d items", len(items))
 	}
-	if kind == "copy" || kind == "move" {
+	switch kind {
+	case "archive", "extract":
+		return fmt.Sprintf("%s %s → %s", verb, what, items[0].Dst)
+	case "copy", "move":
 		dst := path.Dir(items[0].Dst)
 		if len(items) == 1 {
 			dst = items[0].Dst

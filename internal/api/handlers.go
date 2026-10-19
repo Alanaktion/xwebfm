@@ -6,6 +6,7 @@ import (
 	"mime"
 	"net/http"
 	"path"
+	"slices"
 	"strconv"
 
 	"github.com/alanaktion/xwebfm/internal/fsops"
@@ -356,6 +357,22 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.FS.Owners.Groups())
+}
+
+type infoResponse struct {
+	Archive struct {
+		Create []fsops.ArchiveFormat `json:"create"`
+	} `json:"archive"`
+}
+
+// handleInfo reports server capabilities the UI adapts to.
+func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
+	var res infoResponse
+	res.Archive.Create = slices.Clone(fsops.CreateFormats)
+	if fsops.SevenZipAvailable() {
+		res.Archive.Create = append(res.Archive.Create, fsops.Format7z)
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // notify tells WebSocket clients that p's parent directory changed (and p

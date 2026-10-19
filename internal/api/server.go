@@ -50,6 +50,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/jobs/{id}/dismiss", s.handleDismissJob)
 	mux.HandleFunc("POST /api/v1/jobs/clear", s.handleClearJobs)
 	mux.HandleFunc("GET /api/v1/ws", s.handleWS)
+	mux.HandleFunc("GET /api/v1/info", s.handleInfo)
 	mux.HandleFunc("GET /api/v1/users", s.handleUsers)
 	mux.HandleFunc("GET /api/v1/groups", s.handleGroups)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {

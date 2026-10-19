@@ -4,6 +4,7 @@ package api
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -166,5 +167,82 @@ func TestSyncOpsNotify(t *testing.T) {
 	doJSON(t, "POST", ts.URL+"/api/v1/fs/rename", `{"path":"/a","name":"b"}`, nil)
 	if err := wsjson.Read(ctx, c, &ev); err != nil || ev.Type != "changed" || len(ev.Dirs) != 1 || ev.Dirs[0] != "/" {
 		t.Errorf("event after rename: %+v %v", ev, err)
+	}
+}
+
+// waitJob polls the job list until id finishes.
+func waitJob(t *testing.T, url, id string) jobs.Job {
+	t.Helper()
+	for range 1000 {
+		var list []jobs.Job
+		doJSON(t, "GET", url+"/api/v1/jobs", "", &list)
+		for _, j := range list {
+			if j.ID == id && j.Finished != nil {
+				return j
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("job %s did not finish", id)
+	return jobs.Job{}
+}
+
+func TestArchiveJobs(t *testing.T) {
+	ts, dir := newTestServer(t)
+	os.MkdirAll(filepath.Join(dir, "src/sub"), 0o755)
+	os.WriteFile(filepath.Join(dir, "src/a.txt"), []byte("alpha"), 0o644)
+	os.WriteFile(filepath.Join(dir, "src/sub/b.txt"), []byte("bravo"), 0o644)
+	os.Mkdir(filepath.Join(dir, "out"), 0o755)
+
+	var info infoResponse
+	doJSON(t, "GET", ts.URL+"/api/v1/info", "", &info)
+	if len(info.Archive.Create) < 5 || info.Archive.Create[0] != "zip" {
+		t.Errorf("info %+v", info)
+	}
+
+	var j jobs.Job
+	code := doJSON(t, "POST", ts.URL+"/api/v1/jobs",
+		`{"kind":"archive","paths":["/src/a.txt","/src/sub"],"dst":"/out/both.tar.gz","format":"tar.gz","deleteOriginals":true}`, &j)
+	if code != http.StatusAccepted || j.Title != "Archive 2 items → /out/both.tar.gz" {
+		t.Fatalf("archive submit: %d %+v", code, j)
+	}
+	if j = waitJob(t, ts.URL, j.ID); j.State != jobs.Done {
+		t.Fatalf("archive job: %+v", j)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "src/a.txt")); !os.IsNotExist(err) {
+		t.Errorf("originals not deleted: %v", err)
+	}
+
+	code = doJSON(t, "POST", ts.URL+"/api/v1/jobs",
+		`{"kind":"extract","items":[{"src":"/out/both.tar.gz","dst":"/out"}],"password":"hunter2","deleteOriginals":true}`, &j)
+	if code != http.StatusAccepted {
+		t.Fatalf("extract submit: %d", code)
+	}
+	j = waitJob(t, ts.URL, j.ID)
+	if j.State != jobs.Done || j.Progress.Entries != 3 {
+		t.Fatalf("extract job: %+v", j)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "out/both/sub/b.txt")); string(got) != "bravo" {
+		t.Errorf("extracted b.txt = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "out/both.tar.gz")); !os.IsNotExist(err) {
+		t.Errorf("archive not deleted: %v", err)
+	}
+
+	res, _ := http.Get(ts.URL + "/api/v1/jobs")
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if strings.Contains(string(body), "hunter2") {
+		t.Error("password leaked into the job list")
+	}
+
+	for _, body := range []string{
+		`{"kind":"extract","items":[{"src":"/out/notes.txt","dst":"/out"}]}`,
+		`{"kind":"archive","paths":["/out/both"],"dst":"/x.rar","format":"rar"}`,
+		`{"kind":"archive","paths":["/out/both"],"format":"zip"}`,
+	} {
+		if code := doJSON(t, "POST", ts.URL+"/api/v1/jobs", body, nil); code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", body, code)
+		}
 	}
 }

@@ -19,6 +19,7 @@
     onactivate,
     ondrop,
     onupload,
+    onopen,
   }: {
     pane: PaneState
     index: number
@@ -28,6 +29,8 @@
     ondrop: (dir: string, payload: DragPayload, mods: { copy: boolean; move: boolean }) => void
     /** Files dragged in from the desktop. */
     onupload: (dir: string, files: File[]) => void
+    /** Double-click on a row. */
+    onopen: (row: Row) => void
   } = $props()
 
   const icon: Record<string, string> = { dir: '📁', symlink: '🔗', file: '📄' }
@@ -115,6 +118,7 @@
       {/each}
     </nav>
     <span class="count">
+      {#if pane.loading && !pane.stale}<span class="spinner small" aria-label="Refreshing"></span>{/if}
       {#if pane.selected.size}{pane.selected.size} selected{/if}
     </span>
     <button onclick={() => pane.load()} disabled={pane.loading} title="Refresh">⟳</button>
@@ -122,7 +126,12 @@
 
   <div class="body" bind:this={body}>
     {#if pane.error}<p class="error">{pane.error}</p>{/if}
-    <table>
+    {#if pane.stale}
+      <div class="loading" role="status">
+        <span class="spinner"></span> Loading <span class="mono">{pane.path}</span>…
+      </div>
+    {/if}
+    <table class:hidden={pane.stale}>
       <thead>
         <tr>
           <th>Name</th>
@@ -143,7 +152,7 @@
             class:droptarget={target !== null && dropTarget === target && target !== pane.path}
             draggable={e ? 'true' : 'false'}
             onclick={(ev) => pane.click(i, ev)}
-            ondblclick={() => pane.open(row)}
+            ondblclick={() => onopen(row)}
             ondragstart={(ev) => e && dragStart(ev, e)}
             ondragover={(ev) => dragOver(ev, target)}
             ondrop={(ev) => drop(ev, target)}
@@ -165,7 +174,7 @@
         {/each}
       </tbody>
     </table>
-    {#if !pane.loading && !pane.error && pane.entries.length === 0}
+    {#if !pane.stale && !pane.error && pane.entries.length === 0}
       <p class="muted empty">Empty directory — drop files here to upload</p>
     {/if}
   </div>
@@ -216,6 +225,35 @@
   .name { width: 100%; white-space: normal; word-break: break-all; }
   .muted { color: var(--muted); }
   .empty { text-align: center; padding: 24px; }
+  .hidden { display: none; }
+  /* Fades in after a short delay so fast loads don't flash. */
+  .loading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 24px 12px;
+    color: var(--muted);
+    justify-content: center;
+    animation: appear 0.2s 0.15s both;
+  }
+  @keyframes appear {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  .spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    display: inline-block;
+    vertical-align: middle;
+  }
+  .spinner.small { width: 10px; height: 10px; border-width: 2px; margin-right: 4px; }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
   .error { padding: 0 10px; }
   @media (max-width: 1100px) {
     .date { display: none; }
