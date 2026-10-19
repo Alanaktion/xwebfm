@@ -1,0 +1,62 @@
+:root {
+  --bg: #fff;
+  --fg: #1d1f23;
+  --muted: #6b7280;
+  --border: #e3e5e8;
+  --hover: #f3f4f6;
+  --accent: #2563eb;
+  --danger: #b91c1c;
+  --ok: #15803d;
+  color-scheme: light dark;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 14px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181c;
+    --fg: #e6e7e9;
+    --muted: #9ca3af;
+    --border: #2c3036;
+    --hover: #1f2329;
+    --accent: #60a5fa;
+    --danger: #f87171;
+    --ok: #4ade80;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); }
+code, .mono { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 13px; }
+button {
+  font: inherit;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+button:hover { background: var(--hover); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:disabled { opacity: 0.5; cursor: default; }
+input, select {
+  font: inherit;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+dialog {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--fg);
+  padding: 20px;
+  min-width: min(420px, calc(100vw - 32px));
+}
+dialog::backdrop { background: rgb(0 0 0 / 0.35); }
+dialog h2 { margin: 0 0 12px; font-size: 16px; }
+dialog label { display: block; margin: 10px 0 4px; }
+dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+dialog .check { display: flex; align-items: center; gap: 6px; }
+.error { color: var(--danger); }

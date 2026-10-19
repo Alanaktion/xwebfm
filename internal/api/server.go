@@ -1,0 +1,98 @@
+// Package api exposes fsops over a JSON HTTP API.
+//
+// The API performs no authentication: xwebfm is meant to run behind a
+// reverse proxy or other layer that authenticates the single admin user.
+package api
+
+import (
+	"encoding/json"
+	"errors"
+	"io/fs"
+	"log/slog"
+	"net/http"
+	"syscall"
+
+	"github.com/alanaktion/xwebfm/internal/fsops"
+)
+
+// Server holds the dependencies of the HTTP handlers.
+type Server struct {
+	FS     *fsops.FS
+	Log    *slog.Logger
+	Static http.Handler // serves the SPA; may be nil
+}
+
+// Handler returns the root HTTP handler, including middleware.
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("GET /api/v1/fs/list", s.handleList)
+	mux.HandleFunc("GET /api/v1/fs/stat", s.handleStat)
+	mux.HandleFunc("POST /api/v1/fs/chown", s.handleChown)
+	mux.HandleFunc("POST /api/v1/fs/chmod", s.handleChmod)
+	mux.HandleFunc("POST /api/v1/fs/copy", s.handleCopy)
+	mux.HandleFunc("GET /api/v1/users", s.handleUsers)
+	mux.HandleFunc("GET /api/v1/groups", s.handleGroups)
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, "not_found", "unknown API endpoint")
+	})
+	if s.Static != nil {
+		mux.Handle("/", s.Static)
+	}
+	return s.recoverer(s.logger(requireJSON(mux)))
+}
+
+type errorBody struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, status int, code, msg string) {
+	var body errorBody
+	body.Error.Code, body.Error.Message = code, msg
+	writeJSON(w, status, body)
+}
+
+// writeFSError maps filesystem errors onto HTTP statuses.
+func (s *Server) writeFSError(w http.ResponseWriter, r *http.Request, err error) {
+	status, code := http.StatusInternalServerError, "internal"
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		status, code = http.StatusNotFound, "not_found"
+	case errors.Is(err, fs.ErrExist):
+		status, code = http.StatusConflict, "exists"
+	case errors.Is(err, fs.ErrPermission):
+		status, code = http.StatusForbidden, "permission_denied"
+	case errors.Is(err, fsops.ErrReflinkUnsupported):
+		status, code = http.StatusUnprocessableEntity, "reflink_unsupported"
+	case errors.Is(err, fsops.ErrInvalidArgument), errors.Is(err, fsops.ErrNotRegular),
+		errors.Is(err, fsops.ErrIsSymlink), errors.Is(err, syscall.ENOTDIR),
+		errors.Is(err, syscall.ELOOP), errors.Is(err, syscall.EISDIR):
+		status, code = http.StatusBadRequest, "invalid"
+	}
+	if status == http.StatusInternalServerError {
+		s.Log.Error("request failed", "method", r.Method, "path", r.URL.Path, "err", err)
+	}
+	writeError(w, status, code, err.Error())
+}
+
+// decode reads a JSON request body into v, rejecting unknown fields.
+func decode(w http.ResponseWriter, r *http.Request, v any) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
+		return false
+	}
+	return true
+}
