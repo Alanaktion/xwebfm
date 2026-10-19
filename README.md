@@ -160,6 +160,35 @@ For development, `make dev` runs the Go server on `:8080` and the Vite dev
 server (which proxies `/api`) together. `make test` and `make lint` run the
 checks; run `sudo go test ./internal/...` to cover ownership changes.
 
+## Container
+
+Images for linux/amd64 and linux/arm64 are published to
+`ghcr.io/alanaktion/xwebfm` by the Container workflow: `:edge` from `main`,
+and `:X.Y.Z` / `:X.Y` / `:latest` from `vX.Y.Z` tags (which also create a
+GitHub release).
+
+The image runs as root and serves the host filesystem mounted at `/host`,
+resolving user and group names from the host's `/etc/passwd` and
+`/etc/group` (the defaults of its command line):
+
+```sh
+docker run -d --name xwebfm --restart unless-stopped \
+  -p 127.0.0.1:8080:8080 \
+  -v /:/host \
+  ghcr.io/alanaktion/xwebfm:0.1.0
+```
+
+- Keep it bound to localhost behind your authenticating proxy, as above.
+- Mount a narrower tree (e.g. `-v /srv:/host`) to expose less; with btrfs,
+  mount one parent so reflinks work across everything you manage (reflink
+  copies can't cross bind mounts).
+- Don't use rootless Docker or `userns-remap`: ownership changes need real
+  host UIDs.
+- Docker's default seccomp profile allows `openat2` (Docker 20.10+).
+- Override the arguments to change flags, e.g.
+  `… ghcr.io/alanaktion/xwebfm:0.1.0 -listen 0.0.0.0:8080 -root /host -passwd /host/etc/passwd -group /host/etc/group -jobs 4`.
+- `xwebfm -version` prints the build version.
+
 ## API
 
 All endpoints return JSON; errors look like
