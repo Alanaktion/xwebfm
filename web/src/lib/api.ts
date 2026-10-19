@@ -243,6 +243,8 @@ export const api = {
   props: (path: string) => request<Props>('GET', `/api/v1/fs/props${q(path)}`),
   setAcl: (path: string, acl: ACL) => request<Props>('POST', '/api/v1/fs/acl', { path, acl }),
   setFlags: (path: string, flags: Flags) => request<Props>('POST', '/api/v1/fs/flags', { path, flags }),
+  write: (req: { path: string; content: string; expectSize: number; expectMtime: string }) =>
+    request<Entry>('POST', '/api/v1/fs/write', req),
   link: (req: { target: string; path: string; kind: 'symlink' | 'hard'; relative: boolean }) =>
     request<Entry>('POST', '/api/v1/fs/link', req),
   users: () => request<Account[]>('GET', '/api/v1/users'),

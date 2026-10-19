@@ -1,6 +1,21 @@
 import { SvelteMap, SvelteSet } from 'svelte/reactivity'
 import { api, type Entry, type FindResult, type FSInfo } from './api'
 import { joinPath, parentPath } from './format'
+import { loadSetting, persist, settings } from './settings.svelte'
+
+export type SortKey = 'name' | 'size' | 'mode' | 'owner' | 'mtime'
+export type CompareStatus = 'only' | 'diff' | 'same'
+
+/** Compares an entry with a same-named entry in the other pane (if any). */
+export function compareStatus(e: Entry, other: Entry | undefined): CompareStatus {
+  if (!other) return 'only'
+  if (other.type !== e.type) return 'diff'
+  if (e.type === 'file' && (other.size !== e.size || other.mtime !== e.mtime)) return 'diff'
+  if (e.type === 'symlink' && other.linkTarget !== e.linkTarget) return 'diff'
+  return 'same'
+}
+
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
 
 /** Search results shown in place of a directory listing. */
 export interface PaneResults {
@@ -30,6 +45,41 @@ export class PaneState {
   resultEntries = $state<Entry[]>([])
   /** Folder sizes computed by disk-usage scans, by path. */
   dirSizes = new SvelteMap<string, number>()
+  /** Type-to-filter text (case-insensitive substring of the name). */
+  filter = $state('')
+  /** Bumped to ask the pane to focus its filter box. */
+  focusFilter = $state(0)
+  editingPath = $state(false)
+  sort = $state<{ key: SortKey; desc: boolean }>({ key: 'name', desc: false })
+  #sortKey: string
+
+  /** Entries after hiding dotfiles, filtering and sorting. */
+  visible: Entry[] = $derived.by(() => {
+    const f = this.filter.toLowerCase()
+    const list = (this.results ? this.resultEntries : this.entries).filter(
+      (e) => (settings.showHidden || !e.name.startsWith('.')) && (!f || e.name.toLowerCase().includes(f)),
+    )
+    const { key, desc } = this.sort
+    const size = (e: Entry) => (e.type === 'dir' ? (this.dirSizes.get(e.path) ?? -1) : e.size)
+    const cmp = (a: Entry, b: Entry): number => {
+      switch (key) {
+        case 'size':
+          return size(a) - size(b)
+        case 'mode':
+          return a.mode - b.mode
+        case 'owner':
+          return collator.compare(a.user ?? String(a.uid), b.user ?? String(b.uid))
+        case 'mtime':
+          return Date.parse(a.mtime) - Date.parse(b.mtime)
+      }
+      return collator.compare(this.results ? a.path : a.name, this.results ? b.path : b.name)
+    }
+    return list.sort((a, b) => {
+      const da = a.type === 'dir', db = b.type === 'dir'
+      if (da !== db) return da ? -1 : 1 // folders first, whatever the order
+      return (desc ? -cmp(a, b) : cmp(a, b)) || collator.compare(a.name, b.name)
+    })
+  })
   #anchor = 0 // start of a shift-click range
   #seq = 0 // identifies the latest load, so slower stale responses are dropped
 
@@ -38,17 +88,26 @@ export class PaneState {
 
   rows: Row[] = $derived(
     this.results
-      ? this.resultEntries.map((entry) => ({ parent: false as const, entry }))
+      ? this.visible.map((entry) => ({ parent: false as const, entry }))
       : this.stale
-      ? []
-      : [
-          ...(this.path === '/' ? [] : [{ parent: true as const, path: parentPath(this.path) }]),
-          ...this.entries.map((entry) => ({ parent: false as const, entry })),
-        ],
+        ? []
+        : [
+            ...(this.path === '/' ? [] : [{ parent: true as const, path: parentPath(this.path) }]),
+            ...this.visible.map((entry) => ({ parent: false as const, entry })),
+          ],
   )
 
-  constructor(path = '/') {
+  /** storageKey keeps this pane's sort order across reloads. */
+  constructor(path = '/', storageKey = 'pane') {
     this.path = path
+    this.#sortKey = `${storageKey}.sort`
+    this.sort = loadSetting(this.#sortKey, this.sort)
+  }
+
+  /** Sorts by key, toggling the direction when it's already the sort key. */
+  sortBy(key: SortKey) {
+    this.sort = { key, desc: this.sort.key === key ? !this.sort.desc : key !== 'name' }
+    persist(this.#sortKey, this.sort)
   }
 
   /** Loads (or refreshes) the listing of path. Resolves false if superseded. */
@@ -102,6 +161,8 @@ export class PaneState {
   navigate(path: string) {
     this.results = null
     this.resultEntries = []
+    this.filter = ''
+    this.editingPath = false
     // When going up, put the cursor on the directory we came from.
     const from = this.path
     this.path = path
@@ -121,7 +182,7 @@ export class PaneState {
 
   /** The entries an operation applies to: the selection, else the cursor row. */
   targets(): Entry[] {
-    if (this.selected.size) return this.entries.filter((e) => this.selected.has(e.path))
+    if (this.selected.size) return this.visible.filter((e) => this.selected.has(e.path))
     const row = this.rows[this.cursor]
     return row && !row.parent ? [row.entry] : []
   }
@@ -159,7 +220,7 @@ export class PaneState {
   }
 
   selectAll() {
-    for (const e of this.entries) this.selected.add(e.path)
+    for (const e of this.visible) this.selected.add(e.path)
   }
 
   /**

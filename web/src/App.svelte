@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { api, ApiError, type Account, type Entry, type FindResult, type Job, type UsageReport } from './lib/api'
-  import { archiveInfo, humanSize } from './lib/format'
+  import { archiveInfo, humanSize, parentPath } from './lib/format'
   import ExtractDialog from './lib/ExtractDialog.svelte'
   import ArchiveDialog from './lib/ArchiveDialog.svelte'
   import UsageDialog from './lib/UsageDialog.svelte'
@@ -9,6 +9,10 @@
   import FixOwnerDialog from './lib/FixOwnerDialog.svelte'
   import PropertiesDialog from './lib/PropertiesDialog.svelte'
   import LinkDialog from './lib/LinkDialog.svelte'
+  import ViewerDialog from './lib/ViewerDialog.svelte'
+  import Sidebar from './lib/Sidebar.svelte'
+  import { persist, settings } from './lib/settings.svelte'
+  import { compareStatus } from './lib/pane.svelte'
   import { isFinished, JobsStore } from './lib/jobs.svelte'
   import JobsPanel from './lib/JobsPanel.svelte'
   import { PaneState, type Row } from './lib/pane.svelte'
@@ -33,11 +37,13 @@
     | { kind: 'fixowner'; entries: Entry[] }
     | { kind: 'props'; path: string }
     | { kind: 'link'; entries: Entry[] }
+    | { kind: 'view'; entry: Entry; edit: boolean }
     | { kind: 'find'; root: string; rootOwner: string }
 
   // Both pane directories live in the URL hash (#l=/a&r=/b) so reloads keep them.
   const hash = new URLSearchParams(location.hash.slice(1))
-  const panes = [new PaneState(hash.get('l') || '/'), new PaneState(hash.get('r') || '/')]
+  const panes = [new PaneState(hash.get('l') || '/', 'pane0'), new PaneState(hash.get('r') || '/', 'pane1')]
+  let comparing = $state(false)
   let active = $state(0)
   let dialog = $state<Dialog | null>(null)
   let status = $state<{ text: string; error: boolean } | null>(null)
@@ -156,6 +162,27 @@
       if (t) dialog = { kind: 'props', path: t.path }
     },
     link: () => targets.length && (dialog = { kind: 'link', entries: targets }),
+    view: (edit = false) => {
+      const t = targets.length === 1 ? targets[0] : undefined
+      if (t?.type === 'file') dialog = { kind: 'view', entry: t, edit }
+    },
+    toggleHidden: () => {
+      settings.showHidden = !settings.showHidden
+      persist('showHidden', settings.showHidden)
+    },
+    toggleSidebar: () => {
+      settings.sidebar = !settings.sidebar
+      persist('sidebar', settings.sidebar)
+    },
+    compare: () => (comparing = !comparing),
+    /** Selects, in both panes, entries missing from or differing in the other. */
+    selectDifferences: () => {
+      for (const [i, p] of panes.entries()) {
+        const others = new Map(panes[1 - i].entries.map((e) => [e.name, e]))
+        p.selected.clear()
+        for (const e of p.visible) if (compareStatus(e, others.get(e.name)) !== 'same') p.selected.add(e.path)
+      }
+    },
     find: () =>
       (dialog = {
         kind: 'find',
@@ -189,12 +216,14 @@
       Home: () => pane.move(-Infinity, mode),
       End: () => pane.move(Infinity, mode),
       Enter: () => openRow(pane, pane.rows[pane.cursor]),
-      Backspace: () => pane.path !== '/' && pane.open(pane.rows[0]),
+      Backspace: () => (pane.results ? pane.navigate(pane.path) : pane.path !== '/' && pane.navigate(parentPath(pane.path))),
       Escape: () => pane.selected.clear(),
       Insert: toggleCursor,
       ' ': toggleCursor,
       F2: actions.rename,
-      F3: actions.download,
+      F3: () => (ev.shiftKey ? actions.download() : actions.view()),
+      F4: () => actions.view(true),
+      '/': () => pane.focusFilter++,
       F5: actions.copy,
       F6: actions.move,
       F7: actions.mkdir,
@@ -204,6 +233,20 @@
     if (ctrl && ev.key === 'a') {
       ev.preventDefault()
       pane.selectAll()
+      return
+    }
+    if (ctrl && (ev.key === 'l' || ev.key === 'h' || ev.key === '=')) {
+      ev.preventDefault()
+      if (ev.key === 'l') pane.editingPath = true
+      else if (ev.key === 'h') actions.toggleHidden()
+      else actions.compare()
+      return
+    }
+    // Typing a name filters the active pane.
+    if (!ctrl && !ev.altKey && ev.key.length === 1 && /[\p{L}\p{N}._-]/u.test(ev.key)) {
+      ev.preventDefault()
+      pane.filter += ev.key
+      pane.focusFilter++
       return
     }
     if (ctrl && ev.key === 'u') {
@@ -274,18 +317,24 @@
 <svelte:window onkeydown={onKey} />
 
 <div class="app">
-  <div class="panes">
-    {#each panes as p, i}
-      <Pane
-        pane={p}
-        index={i}
-        active={active === i}
-        onactivate={() => (active = i)}
-        ondrop={(dir, payload, mods) => onDrop(i, dir, payload, mods)}
-        onupload={upload}
-        onopen={(row) => openRow(p, row)}
-      />
-    {/each}
+  <div class="main" class:with-sidebar={settings.sidebar}>
+    {#if settings.sidebar}
+      <Sidebar {users} current={pane.path} onnavigate={(p) => pane.navigate(p)} />
+    {/if}
+    <div class="panes">
+      {#each panes as p, i}
+        <Pane
+          compareWith={comparing ? panes[1 - i] : null}
+          pane={p}
+          index={i}
+          active={active === i}
+          onactivate={() => (active = i)}
+          ondrop={(dir, payload, mods) => onDrop(i, dir, payload, mods)}
+          onupload={upload}
+          onopen={(row) => openRow(p, row)}
+        />
+      {/each}
+    </div>
   </div>
 
   {#if jobsOpen}<JobsPanel store={jobs} onclose={() => (jobsOpen = false)} />{/if}
@@ -296,7 +345,9 @@
     </div>
     <div class="keys">
       <button onclick={actions.rename} disabled={targets.length !== 1}><kbd>F2</kbd>Rename</button>
-      <button onclick={actions.download} disabled={!targets.length}><kbd>F3</kbd>Download</button>
+      <button onclick={() => actions.view()} disabled={targets.length !== 1 || targets[0].type !== 'file'}><kbd>F3</kbd>View</button>
+      <button onclick={() => actions.view(true)} disabled={targets.length !== 1 || targets[0].type !== 'file'}><kbd>F4</kbd>Edit</button>
+      <button onclick={actions.download} disabled={!targets.length} title="Shift+F3">Download</button>
       <button onclick={actions.copy} disabled={!targets.length}><kbd>F5</kbd>Copy</button>
       <button onclick={actions.move} disabled={!targets.length}><kbd>F6</kbd>Move</button>
       <button onclick={actions.mkdir}><kbd>F7</kbd>Mkdir</button>
@@ -312,6 +363,10 @@
       <button onclick={actions.find} title="Alt+F7">Find</button>
       <button onclick={actions.usage} title="Ctrl+U">Usage</button>
       <span class="spacer"></span>
+      <button class:on={settings.sidebar} onclick={actions.toggleSidebar} title="Show places">Places</button>
+      <button class:on={settings.showHidden} onclick={actions.toggleHidden} title="Ctrl+H">Hidden</button>
+      <button class:on={comparing} onclick={actions.compare} title="Ctrl+= — highlight differences between the panes">Compare</button>
+      {#if comparing}<button onclick={actions.selectDifferences}>Select differences</button>{/if}
       <button class="jobs-toggle" class:on={jobsOpen} onclick={() => (jobsOpen = !jobsOpen)} aria-expanded={jobsOpen}>
         Jobs
         {#if jobs.active}<span class="count">{jobs.active}</span>{/if}
@@ -370,6 +425,11 @@
     onclose={() => (dialog = null)}
     onqueued={queued}
   />
+{:else if dialog?.kind === 'view'}
+  <ViewerDialog entry={dialog.entry} edit={dialog.edit} onclose={() => (dialog = null)} ondone={(msg) => {
+    status = { text: msg, error: false }
+    panes.forEach((p) => p.load())
+  }} />
 {:else if dialog?.kind === 'fixowner'}
   <FixOwnerDialog entries={dialog.entries} dir={pane.dir} onclose={() => (dialog = null)} onqueued={queued} />
 {:else if dialog?.kind === 'link'}
@@ -412,6 +472,14 @@
 
 <style>
   .app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+  .main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr; }
+  .main.with-sidebar { grid-template-columns: 180px 1fr; padding-left: 8px; }
+  .main.with-sidebar > :global(.sidebar) { margin: 8px 0; }
+  @media (max-width: 800px) {
+    .main.with-sidebar { grid-template-columns: 1fr; padding-left: 0; }
+    .main.with-sidebar > :global(.sidebar) { display: none; }
+  }
+  footer button.on { border-color: var(--accent); color: var(--accent); }
   .panes {
     flex: 1;
     min-height: 0;

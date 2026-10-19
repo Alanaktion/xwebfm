@@ -146,3 +146,37 @@ func TestLink(t *testing.T) {
 		t.Errorf("hard link to dir: %v", err)
 	}
 }
+
+func TestReplaceFile(t *testing.T) {
+	f, dir := newTestFS(t)
+	p := filepath.Join(dir, "conf")
+	must(t, os.WriteFile(p, []byte("old"), 0o640))
+	if os.Geteuid() == 0 {
+		must(t, os.Chown(p, 1000, 50))
+	}
+	f.SetACL(ctx, "/conf", SetACLOptions{ACL: ACL{Named: []ACLEntry{{Kind: "user", ID: 1234, Perm: 4}}}})
+	e, err := f.Stat("/conf")
+	must(t, err)
+
+	if _, err := f.ReplaceFile("/conf", strings.NewReader("new"), e.Size+1, e.ModTime); !errors.Is(err, ErrConflict) {
+		t.Errorf("stale size: %v", err)
+	}
+	ne, err := f.ReplaceFile("/conf", strings.NewReader("new contents"), e.Size, e.ModTime)
+	must(t, err)
+	if got, _ := os.ReadFile(p); string(got) != "new contents" {
+		t.Errorf("contents %q", got)
+	}
+	if ne.Mode&0o777 != e.Mode&0o777 || ne.UID != e.UID || ne.GID != e.GID || ne.ACL != e.ACL {
+		t.Errorf("metadata not kept: before %+v after %+v", e, ne)
+	}
+	entries, _ := f.List("/")
+	for _, x := range entries {
+		if strings.HasPrefix(x.Name, ".xwebfm-") {
+			t.Errorf("temp file %s left", x.Name)
+		}
+	}
+	must(t, os.Symlink("conf", filepath.Join(dir, "lnk")))
+	if _, err := f.ReplaceFile("/lnk", strings.NewReader("x"), 0, e.ModTime); !errors.Is(err, ErrNotRegular) {
+		t.Errorf("symlink: %v", err)
+	}
+}

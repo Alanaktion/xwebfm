@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"time"
 )
 
 var errUnsupported = errors.New("xwebfm requires Linux")
@@ -14,12 +15,15 @@ var errUnsupported = errors.New("xwebfm requires Linux")
 // FS is unavailable on non-Linux platforms; it exists so the module builds.
 type FS struct{ Owners *Owners }
 
-func New(root string, owners *Owners) (*FS, error)                        { return nil, errUnsupported }
-func (f *FS) Root() string                                                { return "" }
-func (f *FS) Close() error                                                { return nil }
-func (f *FS) List(p string) ([]Entry, error)                              { return nil, errUnsupported }
-func (f *FS) Stat(p string) (Entry, error)                                { return Entry{}, errUnsupported }
-func (f *FS) StatFS(p string) (FSInfo, error)                             { return FSInfo{}, errUnsupported }
+func New(root string, owners *Owners) (*FS, error) { return nil, errUnsupported }
+func (f *FS) Root() string                         { return "" }
+func (f *FS) Close() error                         { return nil }
+func (f *FS) List(p string) ([]Entry, error)       { return nil, errUnsupported }
+func (f *FS) Stat(p string) (Entry, error)         { return Entry{}, errUnsupported }
+func (f *FS) StatFS(p string) (FSInfo, error)      { return FSInfo{}, errUnsupported }
+func (f *FS) ReplaceFile(p string, r io.Reader, size int64, mtime time.Time) (Entry, error) {
+	return Entry{}, errUnsupported
+}
 func (f *FS) Chown(ctx context.Context, p string, o ChownOptions) error   { return errUnsupported }
 func (f *FS) Chmod(ctx context.Context, p string, o ChmodOptions) error   { return errUnsupported }
 func (f *FS) Rename(p, name string) error                                 { return errUnsupported }

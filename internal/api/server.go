@@ -48,6 +48,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/fs/acl", s.handleACL)
 	mux.HandleFunc("POST /api/v1/fs/flags", s.handleFlags)
 	mux.HandleFunc("POST /api/v1/fs/link", s.handleLink)
+	mux.HandleFunc("POST /api/v1/fs/write", s.handleWrite)
 	mux.HandleFunc("GET /api/v1/jobs", s.handleListJobs)
 	mux.HandleFunc("POST /api/v1/jobs", s.handleSubmitJob)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/result", s.handleJobResult)
@@ -98,6 +99,8 @@ func (s *Server) writeFSError(w http.ResponseWriter, r *http.Request, err error)
 		status, code = http.StatusForbidden, "permission_denied"
 	case errors.Is(err, fsops.ErrReflinkUnsupported):
 		status, code = http.StatusUnprocessableEntity, "reflink_unsupported"
+	case errors.Is(err, fsops.ErrConflict):
+		status, code = http.StatusConflict, "conflict"
 	case errors.Is(err, fsops.ErrInvalidArgument), errors.Is(err, fsops.ErrNotRegular),
 		errors.Is(err, fsops.ErrIsSymlink), errors.Is(err, syscall.ENOTDIR),
 		errors.Is(err, syscall.ELOOP), errors.Is(err, syscall.EISDIR):
@@ -111,7 +114,12 @@ func (s *Server) writeFSError(w http.ResponseWriter, r *http.Request, err error)
 
 // decode reads a JSON request body into v, rejecting unknown fields.
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	return decodeLimit(w, r, v, 1<<20)
+}
+
+// decodeLimit is decode with a custom body size limit.
+func decodeLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())

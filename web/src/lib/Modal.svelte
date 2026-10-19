@@ -32,7 +32,18 @@
   })
 </script>
 
-<dialog bind:this={dialog} onclose={onclose} class:wide>
+<!-- Buttons call onclose directly (the parent then removes the dialog), so
+     the app's state is updated before any further key press; the native
+     close event still covers Escape. -->
+<dialog
+  bind:this={dialog}
+  onclose={onclose}
+  oncancel={(e) => {
+    e.preventDefault()
+    onclose()
+  }}
+  class:wide
+>
   <form
     onsubmit={(e) => {
       e.preventDefault()
@@ -44,10 +55,10 @@
     {#if error}<p class="error" style="white-space: pre-line">{error}</p>{/if}
     <div class="actions">
       {#if onsubmit}
-        <button type="button" onclick={() => dialog.close()}>Cancel</button>
+        <button type="button" onclick={onclose}>Cancel</button>
         <button type="submit" class="primary" class:danger disabled={busy}>{submitLabel}</button>
       {:else}
-        <button type="button" onclick={() => dialog.close()}>Close</button>
+        <button type="button" onclick={onclose}>Close</button>
       {/if}
     </div>
   </form>

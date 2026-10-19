@@ -11,6 +11,8 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -125,4 +127,99 @@ func (f *FS) WriteTar(ctx context.Context, p string, w io.Writer) error {
 		return err
 	}
 	return aw.Close()
+}
+
+// ReplaceFile atomically replaces the contents of the existing regular file
+// p, as editors do: the data is written to a temporary file in the same
+// directory, which gets the original's owner, mode and extended
+// attributes (including ACLs), and is then renamed over it. The file
+// therefore gets a new inode, so other hard links keep the old contents.
+// If expectSize/expectMtime don't match the current file (it was changed
+// by someone else after being read) ErrConflict is returned.
+func (f *FS) ReplaceFile(p string, r io.Reader, expectSize int64, expectMtime time.Time) (e Entry, err error) {
+	p = CleanPath(p)
+	dpfd, name, err := f.openParent(p)
+	if err != nil {
+		return e, err
+	}
+	defer unix.Close(dpfd)
+	ofd, err := unix.Openat(dpfd, name, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return e, &fs.PathError{Op: "open", Path: p, Err: err}
+	}
+	defer unix.Close(ofd)
+	var st unix.Stat_t
+	if err := unix.Fstat(ofd, &st); err != nil {
+		return e, &fs.PathError{Op: "stat", Path: p, Err: err}
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG {
+		return e, &fs.PathError{Op: "write", Path: p, Err: ErrNotRegular}
+	}
+	if st.Size != expectSize || st.Mtim.Sec != expectMtime.Unix() {
+		return e, &fs.PathError{Op: "write", Path: p, Err: ErrConflict}
+	}
+
+	tmp := ".xwebfm-edit-" + randomHex()
+	fd, err := unix.Openat(dpfd, tmp, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		return e, &fs.PathError{Op: "create", Path: p, Err: err}
+	}
+	file := os.NewFile(uintptr(fd), p)
+	defer func() {
+		if file != nil {
+			file.Close()
+		}
+		if err != nil {
+			unix.Unlinkat(dpfd, tmp, 0)
+		}
+	}()
+	n, err := io.Copy(file, io.LimitReader(r, MaxEditSize+1))
+	if err != nil {
+		return e, &fs.PathError{Op: "write", Path: p, Err: err}
+	}
+	if n > MaxEditSize {
+		return e, fmt.Errorf("%w: file too large to edit", ErrInvalidArgument)
+	}
+	copyXattrs(procPath(ofd), fd)
+	if err := unix.Fchown(fd, int(st.Uid), int(st.Gid)); err != nil {
+		return e, &fs.PathError{Op: "chown", Path: p, Err: err}
+	}
+	if err := unix.Fchmod(fd, st.Mode&0o7777); err != nil {
+		return e, &fs.PathError{Op: "chmod", Path: p, Err: err}
+	}
+	if err := unix.Fsync(fd); err != nil {
+		return e, &fs.PathError{Op: "sync", Path: p, Err: err}
+	}
+	cerr := file.Close()
+	file = nil
+	if cerr != nil {
+		return e, &fs.PathError{Op: "close", Path: p, Err: cerr}
+	}
+	if err := unix.Renameat(dpfd, tmp, dpfd, name); err != nil {
+		return e, &fs.PathError{Op: "rename", Path: p, Err: err}
+	}
+	return f.Stat(p)
+}
+
+// copyXattrs copies extended attributes (ACLs, user.*, security labels)
+// from the file at src to fd, ignoring ones that can't be set.
+func copyXattrs(src string, fd int) {
+	sz, err := unix.Listxattr(src, nil)
+	if err != nil || sz == 0 {
+		return
+	}
+	buf := make([]byte, sz)
+	if sz, err = unix.Listxattr(src, buf); err != nil {
+		return
+	}
+	for _, name := range strings.Split(strings.TrimRight(string(buf[:sz]), "\x00"), "\x00") {
+		vsz, err := unix.Getxattr(src, name, nil)
+		if err != nil {
+			continue
+		}
+		val := make([]byte, vsz)
+		if vsz, err = unix.Getxattr(src, name, val); err == nil {
+			unix.Fsetxattr(fd, name, val[:vsz], 0)
+		}
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -337,5 +338,46 @@ func TestPermissionEndpoints(t *testing.T) {
 	}
 	if target, _ := os.Readlink(filepath.Join(dir, "home/bob/f-link")); target != "sub/f" {
 		t.Errorf("link target %q", target)
+	}
+}
+
+func TestViewAndEdit(t *testing.T) {
+	ts, dir := newTestServer(t)
+	os.WriteFile(filepath.Join(dir, "evil.html"), []byte("<script>alert(1)</script>"), 0o644)
+	os.WriteFile(filepath.Join(dir, "pic.png"), []byte("\x89PNG"), 0o644)
+	os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("hello"), 0o644)
+
+	for name, want := range map[string]string{"evil.html": "text/plain; charset=utf-8", "pic.png": "image/png"} {
+		res, err := http.Get(ts.URL + "/api/v1/fs/download?inline=1&path=/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if got := res.Header.Get("Content-Type"); got != want {
+			t.Errorf("%s: content type %q, want %q", name, got, want)
+		}
+		if res.Header.Get("X-Content-Type-Options") != "nosniff" || !strings.Contains(res.Header.Get("Content-Security-Policy"), "sandbox") {
+			t.Errorf("%s: missing safety headers %v", name, res.Header)
+		}
+		if !strings.HasPrefix(res.Header.Get("Content-Disposition"), "inline") {
+			t.Errorf("%s: disposition %q", name, res.Header.Get("Content-Disposition"))
+		}
+	}
+
+	var e struct {
+		Size  int64     `json:"size"`
+		Mtime time.Time `json:"mtime"`
+	}
+	doJSON(t, "GET", ts.URL+"/api/v1/fs/stat?path=/notes.txt", "", &e)
+	body := `{"path":"/notes.txt","content":"edited","expectSize":` + strconv.FormatInt(e.Size, 10) + `,"expectMtime":"` + e.Mtime.Format(time.RFC3339) + `"}`
+	if code := doJSON(t, "POST", ts.URL+"/api/v1/fs/write", body, nil); code != 200 {
+		t.Fatalf("write: %d", code)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "notes.txt")); string(got) != "edited" {
+		t.Errorf("contents %q", got)
+	}
+	// The same expectations are now stale.
+	if code := doJSON(t, "POST", ts.URL+"/api/v1/fs/write", body, nil); code != http.StatusConflict {
+		t.Errorf("stale write: %d", code)
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"path"
 	"slices"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/alanaktion/xwebfm/internal/fsops"
 )
@@ -372,8 +374,17 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 
 // handleDownload serves a file (with range support) or a directory as a
 // .tar.gz stream.
+// inlineTypes are the media types served inline for viewing. Everything
+// else is served inline as text/plain, so user-controlled HTML or SVG can
+// never run in the app's origin.
+var inlineTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/bmp", "audio/", "video/"}
+
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
+	// Defence in depth for anything the browser renders from here.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
 	p := fsops.CleanPath(r.URL.Query().Get("path"))
+	inline := r.URL.Query().Get("inline") == "1"
 	e, err := s.FS.Stat(p)
 	if err != nil {
 		s.writeFSError(w, r, err)
@@ -399,8 +410,43 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+	disposition, ctype := "attachment", "application/octet-stream"
+	if inline {
+		disposition, ctype = "inline", "text/plain; charset=utf-8"
+		if t, _, _ := mime.ParseMediaType(mime.TypeByExtension(path.Ext(name))); t != "" {
+			for _, ok := range inlineTypes {
+				if t == ok || strings.HasSuffix(ok, "/") && strings.HasPrefix(t, ok) {
+					ctype = t
+				}
+			}
+		}
+	}
+	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": name}))
 	http.ServeContent(w, r, name, e.ModTime, file)
+}
+
+type writeRequest struct {
+	Path        string    `json:"path"`
+	Content     string    `json:"content"`
+	ExpectSize  int64     `json:"expectSize"`
+	ExpectMtime time.Time `json:"expectMtime"`
+}
+
+// handleWrite saves edited text over an existing file (see
+// fsops.ReplaceFile); 409 means it changed since it was loaded.
+func (s *Server) handleWrite(w http.ResponseWriter, r *http.Request) {
+	var req writeRequest
+	if !decodeLimit(w, r, &req, 2*fsops.MaxEditSize) {
+		return
+	}
+	e, err := s.FS.ReplaceFile(req.Path, strings.NewReader(req.Content), req.ExpectSize, req.ExpectMtime)
+	if err != nil {
+		s.writeFSError(w, r, err)
+		return
+	}
+	s.notify(req.Path, false)
+	writeJSON(w, http.StatusOK, e)
 }
 
 func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {

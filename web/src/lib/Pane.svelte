@@ -10,7 +10,9 @@
 <script lang="ts">
   import type { Entry } from './api'
   import { humanSize, modeString, octal, parentPath } from './format'
-  import type { PaneState, Row } from './pane.svelte'
+  import { api } from './api'
+  import { compareStatus, type PaneState, type Row, type SortKey } from './pane.svelte'
+  import { settings } from './settings.svelte'
 
   let {
     pane,
@@ -20,6 +22,7 @@
     ondrop,
     onupload,
     onopen,
+    compareWith = null,
   }: {
     pane: PaneState
     index: number
@@ -31,7 +34,104 @@
     onupload: (dir: string, files: File[]) => void
     /** Double-click on a row. */
     onopen: (row: Row) => void
+    /** The other pane, when comparing directories. */
+    compareWith?: PaneState | null
   } = $props()
+
+  // Compare mode: same-named entries of the other pane, by name.
+  let others = $derived(
+    compareWith && !compareWith.results && !pane.results
+      ? new Map(compareWith.entries.map((e) => [e.name, e]))
+      : null,
+  )
+
+  // Path bar editing with Tab completion of folder names.
+  let pathInput = $state('')
+  let pathEl = $state<HTMLInputElement>()
+  let completion: { matches: string[]; i: number } | null = null
+
+  $effect(() => {
+    if (pane.editingPath) {
+      pathInput = pane.path === '/' ? '/' : pane.path + '/'
+      completion = null
+      queueMicrotask(() => pathEl?.select())
+    }
+  })
+
+  async function complete(back: boolean) {
+    if (!completion) {
+      const slash = pathInput.lastIndexOf('/')
+      const dir = pathInput.slice(0, slash) || '/'
+      const prefix = pathInput.slice(slash + 1).toLowerCase()
+      const res = await api.list(dir).catch(() => null)
+      if (!res) return
+      const matches = res.entries
+        .filter(
+          (e) =>
+            e.type === 'dir' &&
+            e.name.toLowerCase().startsWith(prefix) &&
+            (settings.showHidden || prefix.startsWith('.') || !e.name.startsWith('.')),
+        )
+        .map((e) => e.path + '/')
+      if (matches.length === 0) return
+      if (matches.length === 1) {
+        pathInput = matches[0]
+        return
+      }
+      completion = { matches, i: -1 }
+    }
+    const n = completion.matches.length
+    completion.i = (completion.i + (back ? -1 : 1) + n) % n
+    pathInput = completion.matches[completion.i]
+  }
+
+  function pathKey(ev: KeyboardEvent) {
+    if (ev.key === 'Tab') {
+      ev.preventDefault()
+      complete(ev.shiftKey)
+      return
+    }
+    completion = null
+    if (ev.key === 'Enter') {
+      ev.preventDefault()
+      let p = pathInput.trim()
+      if (!p.startsWith('/')) p = '/' + p
+      if (p.length > 1) p = p.replace(/\/+$/, '')
+      pane.navigate(p)
+    } else if (ev.key === 'Escape') {
+      pane.editingPath = false
+    }
+  }
+
+  // Type-to-filter box.
+  let filterEl = $state<HTMLInputElement>()
+  let filterFocused = $state(false)
+  $effect(() => {
+    if (pane.focusFilter)
+      queueMicrotask(() => {
+        filterEl?.focus()
+        filterEl?.setSelectionRange(pane.filter.length, pane.filter.length)
+      })
+  })
+
+  function filterKey(ev: KeyboardEvent) {
+    if (ev.key === 'Escape') {
+      pane.filter = ''
+      filterEl?.blur()
+    } else if (ev.key === 'Enter' || ev.key === 'ArrowDown') {
+      ev.preventDefault()
+      pane.cursor = pane.rows[0]?.parent && pane.rows.length > 1 ? 1 : 0
+      filterEl?.blur()
+    }
+  }
+
+  const columns: [SortKey, string, string][] = [
+    ['name', 'Name', ''],
+    ['size', 'Size', 'num'],
+    ['mode', 'Mode', ''],
+    ['owner', 'Owner', ''],
+    ['mtime', 'Modified', 'date'],
+  ]
 
   const icon: Record<string, string> = { dir: '📁', symlink: '🔗', file: '📄' }
   const fmtDate = (s: string) => new Date(s).toLocaleString()
@@ -140,13 +240,46 @@
         </span>
       </div>
     {:else}
-      <nav class="crumbs mono">
-        <button class="link" onclick={() => pane.navigate('/')}>/</button>
-        {#each crumbs as c, i}
-          {#if i > 0}<span>/</span>{/if}
-          <button class="link" onclick={() => pane.navigate(c.path)}>{c.name}</button>
-        {/each}
-      </nav>
+      {#if pane.editingPath}
+        <input
+          bind:this={pathEl}
+          bind:value={pathInput}
+          class="pathinput mono"
+          aria-label="Path (Tab completes)"
+          autocomplete="off"
+          spellcheck="false"
+          onkeydown={pathKey}
+          onblur={() => (pane.editingPath = false)}
+        />
+      {:else}
+        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+        <nav
+          class="crumbs mono"
+          title="Click empty space or press Ctrl+L to type a path"
+          onclick={(e) => e.target === e.currentTarget && (pane.editingPath = true)}
+        >
+          <button class="link" onclick={() => pane.navigate('/')}>/</button>
+          {#each crumbs as c, i}
+            {#if i > 0}<span>/</span>{/if}
+            <button class="link" onclick={() => pane.navigate(c.path)}>{c.name}</button>
+          {/each}
+        </nav>
+      {/if}
+    {/if}
+    {#if pane.filter || pane.focusFilter}
+      <input
+        bind:this={filterEl}
+        bind:value={pane.filter}
+        class="filter"
+        class:hidden={!pane.filter && !filterFocused}
+        onfocus={() => (filterFocused = true)}
+        onblur={() => (filterFocused = false)}
+        placeholder="Filter"
+        aria-label="Filter names"
+        autocomplete="off"
+        spellcheck="false"
+        onkeydown={filterKey}
+      />
     {/if}
     <span class="count">
       {#if pane.loading && !pane.stale}<span class="spinner small" aria-label="Refreshing"></span>{/if}
@@ -165,21 +298,27 @@
     <table class:hidden={pane.stale && !pane.results}>
       <thead>
         <tr>
-          <th>Name</th>
-          <th class="num">Size</th>
-          <th>Mode</th>
-          <th>Owner</th>
-          <th class="date">Modified</th>
+          {#each columns as [key, label, cls]}
+            <th class={cls} aria-sort={pane.sort.key === key ? (pane.sort.desc ? 'descending' : 'ascending') : 'none'}>
+              <button class="sort" onclick={() => pane.sortBy(key)}>
+                {label}{#if pane.sort.key === key}<span class="arrow">{pane.sort.desc ? '▼' : '▲'}</span>{/if}
+              </button>
+            </th>
+          {/each}
         </tr>
       </thead>
       <tbody>
         {#each pane.rows as row, i (row.parent ? '..' : row.entry.path)}
           {@const target = rowTarget(row)}
           {@const e = row.parent ? null : row.entry}
+          {@const cmp = e && others ? compareStatus(e, others.get(e.name)) : null}
           <tr
             data-row={i}
             class:cursor={active && pane.cursor === i}
             class:selected={e && pane.selected.has(e.path)}
+            class:cmp-only={cmp === 'only'}
+            class:cmp-diff={cmp === 'diff'}
+            title={cmp === 'only' ? 'Not in the other pane' : cmp === 'diff' ? 'Differs from the other pane' : undefined}
             class:droptarget={target !== null && dropTarget === target && target !== pane.path}
             draggable={e ? 'true' : 'false'}
             onclick={(ev) => pane.click(i, ev)}
@@ -221,6 +360,8 @@
       <p class="muted empty">No matches</p>
     {:else if !pane.results && !pane.stale && !pane.error && pane.entries.length === 0}
       <p class="muted empty">Empty directory — drop files here to upload</p>
+    {:else if !pane.stale && pane.visible.length === 0 && (pane.filter || !settings.showHidden)}
+      <p class="muted empty">Nothing matches{pane.filter ? ` “${pane.filter}”` : ''}{!settings.showHidden ? ' (hidden files are not shown)' : ''}</p>
     {/if}
   </div>
   {#if pane.fs && !pane.results}
@@ -276,6 +417,25 @@
   .muted { color: var(--muted); }
   .empty { text-align: center; padding: 24px; }
   .hidden { display: none; }
+  .pathinput { flex: 1; min-width: 0; padding: 1px 6px; }
+  .crumbs { cursor: text; }
+  .filter { width: 9em; padding: 1px 6px; font-size: 12px; }
+  .filter.hidden { display: inline-block; width: 0; padding: 0; border: 0; }
+  th { padding: 0; }
+  button.sort {
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    padding: 4px 8px;
+    width: 100%;
+    text-align: inherit;
+    border-radius: 0;
+  }
+  th.num button.sort { text-align: right; }
+  .arrow { font-size: 9px; margin-left: 4px; }
+  tr.cmp-only td { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+  tr.cmp-diff td { background: color-mix(in srgb, var(--warn) 18%, transparent); }
   .results-bar { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
   .results-bar span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .results-bar button { padding: 0 8px; }

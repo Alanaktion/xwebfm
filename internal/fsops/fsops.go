@@ -25,6 +25,8 @@ var (
 	ErrNotRegular = errors.New("not a regular file")
 	// ErrIsSymlink is returned when an operation can't be applied to a symlink.
 	ErrIsSymlink = errors.New("operation not supported on symlinks")
+	// ErrConflict is returned when a file changed after the client read it.
+	ErrConflict = errors.New("the file changed since it was opened")
 	// ErrInvalidArgument is returned for malformed options.
 	ErrInvalidArgument = errors.New("invalid argument")
 )
@@ -187,6 +189,9 @@ type WriteOptions struct {
 	Mode      uint32 // default 0644
 	Overwrite bool
 }
+
+// MaxEditSize is the largest file ReplaceFile writes.
+const MaxEditSize = 5 << 20
 
 // CleanPath normalises a client-supplied path to an absolute, root-relative
 // form such as "/home/alice". ".." can never climb above "/".
