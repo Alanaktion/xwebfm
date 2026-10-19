@@ -112,6 +112,35 @@ export interface UsageReport {
   byOwner: { uid: number; user?: string; size: number; disk: number; entries: number }[]
 }
 
+export interface ACLEntry {
+  kind: 'user' | 'group'
+  id: number
+  name?: string
+  /** rwx bits: 4 read, 2 write, 1 execute */
+  perm: number
+}
+
+export interface ACL {
+  named: ACLEntry[]
+  mask?: number
+  default: ACLEntry[]
+  hasDefault: boolean
+}
+
+export interface Flags {
+  immutable: boolean
+  appendOnly: boolean
+  noDump: boolean
+  noAtime: boolean
+  noCow: boolean
+}
+
+export interface Props {
+  entry: Entry
+  acl: ACL | null
+  flags: Flags | null
+}
+
 export interface FindQuery {
   name?: string
   type?: FileType
@@ -140,7 +169,9 @@ export type JobRequest =
   | ({ kind: 'move'; items: { src: string; dst: string }[]; overwrite: boolean } & OwnerFields)
   | { kind: 'delete'; paths: string[] }
   | { kind: 'chown'; paths: string[]; uid?: number; gid?: number; recursive: boolean }
-  | { kind: 'chmod'; paths: string[]; mode: string; recursive: boolean }
+  | { kind: 'chmod'; paths: string[]; mode?: string; dirMode?: string; fileMode?: string; recursive: boolean }
+  | { kind: 'fixowner'; paths: string[]; match: 'self' | 'parent' }
+  | { kind: 'acl'; paths: string[]; acl: ACL; recursive: boolean }
   | { kind: 'usage'; paths: [string] }
   | { kind: 'find'; paths: [string]; query: FindQuery }
   | ({
@@ -199,7 +230,7 @@ export const api = {
   stat: (path: string) => request<Entry>('GET', `/api/v1/fs/stat${q(path)}`),
   chown: (req: { path: string; uid?: number; gid?: number; recursive?: boolean }) =>
     request<Entry>('POST', '/api/v1/fs/chown', req),
-  chmod: (req: { path: string; mode: string; recursive?: boolean }) =>
+  chmod: (req: { path: string; mode?: string; dirMode?: string; fileMode?: string; recursive?: boolean }) =>
     request<Entry>('POST', '/api/v1/fs/chmod', req),
   copy: (req: { src: string; dst: string; reflink: ReflinkMode; overwrite: boolean } & OwnerFields) =>
     request<CopyResult & { entry: Entry }>('POST', '/api/v1/fs/copy', req),
@@ -209,6 +240,11 @@ export const api = {
   remove: (path: string) => request<null>('POST', '/api/v1/fs/delete', { path }),
   mkdir: (req: { path: string; mode?: string } & OwnerFields) => request<Entry>('POST', '/api/v1/fs/mkdir', req),
   info: () => request<ServerInfo>('GET', '/api/v1/info'),
+  props: (path: string) => request<Props>('GET', `/api/v1/fs/props${q(path)}`),
+  setAcl: (path: string, acl: ACL) => request<Props>('POST', '/api/v1/fs/acl', { path, acl }),
+  setFlags: (path: string, flags: Flags) => request<Props>('POST', '/api/v1/fs/flags', { path, flags }),
+  link: (req: { target: string; path: string; kind: 'symlink' | 'hard'; relative: boolean }) =>
+    request<Entry>('POST', '/api/v1/fs/link', req),
   users: () => request<Account[]>('GET', '/api/v1/users'),
   groups: () => request<Account[]>('GET', '/api/v1/groups'),
 

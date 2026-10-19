@@ -87,7 +87,11 @@ type ChownOptions struct {
 // ChmodOptions controls Chmod. Symlinks are skipped during recursive walks
 // since Linux symlinks have no meaningful mode of their own.
 type ChmodOptions struct {
-	Mode      uint32
+	Mode uint32
+	// DirMode and FileMode, when set, replace Mode for directories and for
+	// everything else respectively (e.g. 755 for folders, 644 for files).
+	DirMode   *uint32
+	FileMode  *uint32
 	Recursive bool
 	Progress  *Progress
 }

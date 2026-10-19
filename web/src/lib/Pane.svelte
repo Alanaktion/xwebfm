@@ -36,6 +36,21 @@
   const icon: Record<string, string> = { dir: '📁', symlink: '🔗', file: '📄' }
   const fmtDate = (s: string) => new Date(s).toLocaleString()
 
+  /** Whether an entry's owner differs from the listed folder's owner. */
+  function mismatch(e: Entry): boolean {
+    const d = pane.dir
+    return !pane.results && !!d && (e.uid !== d.uid || e.gid !== d.gid)
+  }
+
+  function ownerNote(e: Entry): string {
+    const notes = []
+    if (!e.user) notes.push(`uid ${e.uid} has no user account`)
+    if (!e.group) notes.push(`gid ${e.gid} has no group`)
+    const d = pane.dir
+    if (mismatch(e) && d) notes.push(`folder is owned by ${d.user ?? d.uid}:${d.group ?? d.gid}`)
+    return notes.join('; ')
+  }
+
   /** A result's path relative to the search root. */
   function relative(p: string): string {
     const root = pane.results?.root ?? '/'
@@ -185,8 +200,15 @@
                     title="Total size from the last disk-usage scan">{humanSize(pane.dirSizes.get(e.path)!)}</span
                   >{/if}
               </td>
-              <td class="mono" title={octal(e.mode)}>{modeString(e.type, e.mode)}</td>
-              <td class="mono">{e.user ?? e.uid}:{e.group ?? e.gid}</td>
+              <td class="mono" title={octal(e.mode) + (e.acl ? ' + ACL' : '')}>{modeString(e.type, e.mode)}{e.acl ? '+' : ''}</td>
+              <td
+                class="mono"
+                class:mismatch={mismatch(e)}
+                class:orphan={!e.user || !e.group}
+                title={ownerNote(e)}
+              >
+                {e.user ?? e.uid}:{e.group ?? e.gid}
+              </td>
               <td class="muted date">{fmtDate(e.mtime)}</td>
             {:else}
               <td class="name" colspan="5"><span aria-hidden="true">📁</span> ..</td>
@@ -258,6 +280,8 @@
   .results-bar span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .results-bar button { padding: 0 8px; }
   .computed { font-style: italic; color: var(--muted); }
+  td.mismatch { color: var(--warn); }
+  td.orphan { color: var(--danger); }
   .fsinfo {
     border-top: 1px solid var(--border);
     padding: 3px 10px;

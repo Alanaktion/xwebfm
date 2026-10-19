@@ -56,3 +56,8 @@ func (f *FS) DiskUsage(ctx context.Context, p string, prog *Progress) (UsageRepo
 func (f *FS) Find(ctx context.Context, root string, q FindQuery, prog *Progress) (FindResult, error) {
 	return FindResult{}, errUnsupported
 }
+func (f *FS) GetACL(p string) (ACL, error)                                { return ACL{}, errUnsupported }
+func (f *FS) SetACL(ctx context.Context, p string, o SetACLOptions) error { return errUnsupported }
+func (f *FS) GetFlags(p string) (Flags, error)                            { return Flags{}, errUnsupported }
+func (f *FS) SetFlags(p string, fl Flags) error                           { return errUnsupported }
+func (f *FS) Link(target, linkPath string, o LinkOptions) error           { return errUnsupported }

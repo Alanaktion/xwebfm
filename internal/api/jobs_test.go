@@ -293,3 +293,49 @@ func TestUsageAndFindJobs(t *testing.T) {
 		t.Errorf("list extras: dir=%+v fs=%+v", lr.Dir, lr.FS)
 	}
 }
+
+func TestPermissionEndpoints(t *testing.T) {
+	ts, dir := newTestServer(t)
+	os.MkdirAll(filepath.Join(dir, "home/bob/sub"), 0o700)
+	os.WriteFile(filepath.Join(dir, "home/bob/sub/f"), nil, 0o600)
+	if os.Geteuid() == 0 {
+		os.Chown(filepath.Join(dir, "home/bob"), 1001, 1001)
+	}
+
+	// chmod job with separate folder/file modes.
+	var j jobs.Job
+	doJSON(t, "POST", ts.URL+"/api/v1/jobs", `{"kind":"chmod","paths":["/home/bob/sub"],"dirMode":"755","fileMode":"644","recursive":true}`, &j)
+	if j = waitJob(t, ts.URL, j.ID); j.State != jobs.Done {
+		t.Fatalf("chmod job %+v", j)
+	}
+	if st, _ := os.Stat(filepath.Join(dir, "home/bob/sub/f")); st.Mode().Perm() != 0o644 {
+		t.Errorf("file mode %v", st.Mode())
+	}
+	if code := doJSON(t, "POST", ts.URL+"/api/v1/jobs", `{"kind":"chmod","paths":["/home"],"dirMode":"755"}`, nil); code != http.StatusBadRequest {
+		t.Errorf("dirMode without fileMode: %d", code)
+	}
+
+	if os.Geteuid() == 0 {
+		doJSON(t, "POST", ts.URL+"/api/v1/jobs", `{"kind":"fixowner","paths":["/home/bob"],"match":"self"}`, &j)
+		if j = waitJob(t, ts.URL, j.ID); j.State != jobs.Done {
+			t.Fatalf("fixowner job %+v", j)
+		}
+		var e struct{ UID uint32 }
+		doJSON(t, "GET", ts.URL+"/api/v1/fs/stat?path=/home/bob/sub/f", "", &e)
+		if e.UID != 1001 {
+			t.Errorf("fixowner left uid %d", e.UID)
+		}
+	}
+
+	var props propsResponse
+	code := doJSON(t, "POST", ts.URL+"/api/v1/fs/acl", `{"path":"/home/bob/sub","acl":{"named":[{"kind":"user","id":1000,"perm":5}]}}`, &props)
+	if code != 200 || props.ACL == nil || len(props.ACL.Named) != 1 || !props.Entry.ACL {
+		t.Errorf("acl: %d %+v", code, props)
+	}
+	if code := doJSON(t, "POST", ts.URL+"/api/v1/fs/link", `{"target":"/home/bob/sub/f","path":"/home/bob/f-link","kind":"symlink","relative":true}`, nil); code != 200 {
+		t.Errorf("link: %d", code)
+	}
+	if target, _ := os.Readlink(filepath.Join(dir, "home/bob/f-link")); target != "sub/f" {
+		t.Errorf("link target %q", target)
+	}
+}

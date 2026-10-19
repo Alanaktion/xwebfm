@@ -39,8 +39,10 @@ func (f *FS) Chown(ctx context.Context, p string, o ChownOptions) error {
 // Chmod sets the permission bits of p. A symlink target is rejected, and
 // symlinks found during a recursive walk are skipped.
 func (f *FS) Chmod(ctx context.Context, p string, o ChmodOptions) error {
-	if o.Mode&^0o7777 != 0 {
-		return fmt.Errorf("%w: mode %o out of range", ErrInvalidArgument, o.Mode)
+	for _, m := range []*uint32{&o.Mode, o.DirMode, o.FileMode} {
+		if m != nil && *m&^0o7777 != 0 {
+			return fmt.Errorf("%w: mode %o out of range", ErrInvalidArgument, *m)
+		}
 	}
 	p = CleanPath(p)
 	fd, err := f.open(p, unix.O_PATH|unix.O_NOFOLLOW)
@@ -59,7 +61,15 @@ func (f *FS) Chmod(ctx context.Context, p string, o ChmodOptions) error {
 			return nil
 		}
 		top = false
-		if err := unix.Fchmodat(unix.AT_FDCWD, procPath(fd), o.Mode, 0); err != nil {
+		mode := o.Mode
+		if st.Mode&unix.S_IFMT == unix.S_IFDIR {
+			if o.DirMode != nil {
+				mode = *o.DirMode
+			}
+		} else if o.FileMode != nil {
+			mode = *o.FileMode
+		}
+		if err := unix.Fchmodat(unix.AT_FDCWD, procPath(fd), mode, 0); err != nil {
 			return &fs.PathError{Op: "chmod", Path: p, Err: err}
 		}
 		return nil

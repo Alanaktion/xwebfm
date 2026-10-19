@@ -6,6 +6,9 @@
   import ArchiveDialog from './lib/ArchiveDialog.svelte'
   import UsageDialog from './lib/UsageDialog.svelte'
   import FindDialog from './lib/FindDialog.svelte'
+  import FixOwnerDialog from './lib/FixOwnerDialog.svelte'
+  import PropertiesDialog from './lib/PropertiesDialog.svelte'
+  import LinkDialog from './lib/LinkDialog.svelte'
   import { isFinished, JobsStore } from './lib/jobs.svelte'
   import JobsPanel from './lib/JobsPanel.svelte'
   import { PaneState, type Row } from './lib/pane.svelte'
@@ -27,6 +30,9 @@
     | { kind: 'extract'; archives: Entry[] }
     | { kind: 'archive'; sources: Entry[] }
     | { kind: 'usage'; path: string }
+    | { kind: 'fixowner'; entries: Entry[] }
+    | { kind: 'props'; path: string }
+    | { kind: 'link'; entries: Entry[] }
     | { kind: 'find'; root: string; rootOwner: string }
 
   // Both pane directories live in the URL hash (#l=/a&r=/b) so reloads keep them.
@@ -75,6 +81,12 @@
     api.groups().then((g) => (groups = g)).catch(() => {})
     return () => jobs.close()
   })
+
+  /** Opens the owner or mode dialog for one path (from Properties). */
+  async function openFor(path: string, kind: 'chown' | 'chmod') {
+    const entry = await api.stat(path)
+    dialog = { kind, entries: [entry] }
+  }
 
   /** Shows folder totals from a disk-usage report in both panes. */
   function showSizes(report: UsageReport) {
@@ -138,6 +150,12 @@
     upload: () => uploadInput.click(),
     extract: () => archives.length && (dialog = { kind: 'extract', archives }),
     usage: () => (dialog = { kind: 'usage', path: pane.path }),
+    fixowner: () => targets.length && (dialog = { kind: 'fixowner', entries: targets }),
+    props: () => {
+      const t = targets[0] ?? pane.dir
+      if (t) dialog = { kind: 'props', path: t.path }
+    },
+    link: () => targets.length && (dialog = { kind: 'link', entries: targets }),
     find: () =>
       (dialog = {
         kind: 'find',
@@ -191,6 +209,11 @@
     if (ctrl && ev.key === 'u') {
       ev.preventDefault()
       actions.usage()
+      return
+    }
+    if (ev.altKey && ev.key === 'Enter') {
+      ev.preventDefault()
+      actions.props()
       return
     }
     if (ev.altKey && ev.key === 'F7') {
@@ -280,6 +303,9 @@
       <button onclick={actions.delete} disabled={!targets.length}><kbd>F8</kbd>Delete</button>
       <button onclick={actions.chown} disabled={!targets.length}>Owner</button>
       <button onclick={actions.chmod} disabled={!targets.some((t) => t.type !== 'symlink')}>Mode</button>
+      <button onclick={actions.fixowner} disabled={!targets.some((t) => t.type === 'dir')} title="Recursively unify ownership">Fix owner</button>
+      <button onclick={actions.props} title="Alt+Enter">Properties</button>
+      <button onclick={actions.link} disabled={!targets.length}>Link</button>
       <button onclick={actions.upload}>Upload</button>
       <button onclick={actions.extract} disabled={!archives.length}>Extract</button>
       <button onclick={actions.archive} disabled={!targets.length || !createFormats.length}>Archive</button>
@@ -343,6 +369,22 @@
     {groups}
     onclose={() => (dialog = null)}
     onqueued={queued}
+  />
+{:else if dialog?.kind === 'fixowner'}
+  <FixOwnerDialog entries={dialog.entries} dir={pane.dir} onclose={() => (dialog = null)} onqueued={queued} />
+{:else if dialog?.kind === 'link'}
+  <LinkDialog entries={dialog.entries} dest={other.path} onclose={() => (dialog = null)} ondone={done} />
+{:else if dialog?.kind === 'props'}
+  {@const path = dialog.path}
+  <PropertiesDialog
+    {path}
+    {users}
+    {groups}
+    onclose={() => (dialog = null)}
+    onqueued={queued}
+    onchanged={() => panes.forEach((p) => p.load())}
+    onowner={() => openFor(path, 'chown')}
+    onmode={() => openFor(path, 'chmod')}
   />
 {:else if dialog?.kind === 'usage'}
   <UsageDialog

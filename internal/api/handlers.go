@@ -5,6 +5,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"path"
 	"slices"
 	"strconv"
@@ -116,9 +117,50 @@ func (s *Server) handleChown(w http.ResponseWriter, r *http.Request) {
 }
 
 type chmodRequest struct {
-	Path      string `json:"path"`
-	Mode      string `json:"mode"` // octal, e.g. "0755" or "2775"
-	Recursive bool   `json:"recursive"`
+	Path string `json:"path"`
+	modeFields
+	Recursive bool `json:"recursive"`
+}
+
+// modeFields gives either one octal mode for everything, or separate modes
+// for directories and for files (e.g. "2775" and "664").
+type modeFields struct {
+	Mode     string `json:"mode"`
+	DirMode  string `json:"dirMode"`
+	FileMode string `json:"fileMode"`
+}
+
+func parseMode(s string) (*uint32, error) {
+	if s == "" {
+		return nil, nil
+	}
+	m, err := strconv.ParseUint(s, 8, 32)
+	if err != nil || m > 0o7777 {
+		return nil, fmt.Errorf("%w: invalid octal mode %q", fsops.ErrInvalidArgument, s)
+	}
+	v := uint32(m)
+	return &v, nil
+}
+
+func (f modeFields) options() (fsops.ChmodOptions, error) {
+	var o fsops.ChmodOptions
+	mode, err := parseMode(f.Mode)
+	if err != nil {
+		return o, err
+	}
+	if o.DirMode, err = parseMode(f.DirMode); err != nil {
+		return o, err
+	}
+	if o.FileMode, err = parseMode(f.FileMode); err != nil {
+		return o, err
+	}
+	switch {
+	case mode != nil:
+		o.Mode = *mode
+	case o.DirMode == nil || o.FileMode == nil:
+		return o, fmt.Errorf("%w: give mode, or both dirMode and fileMode", fsops.ErrInvalidArgument)
+	}
+	return o, nil
 }
 
 func (s *Server) handleChmod(w http.ResponseWriter, r *http.Request) {
@@ -126,12 +168,13 @@ func (s *Server) handleChmod(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	mode, err := strconv.ParseUint(req.Mode, 8, 32)
-	if err != nil || mode > 0o7777 {
-		writeError(w, http.StatusBadRequest, "invalid", fmt.Sprintf("invalid octal mode %q", req.Mode))
+	opts, err := req.modeFields.options()
+	if err != nil {
+		s.writeFSError(w, r, err)
 		return
 	}
-	if err := s.FS.Chmod(r.Context(), req.Path, fsops.ChmodOptions{Mode: uint32(mode), Recursive: req.Recursive}); err != nil {
+	opts.Recursive = req.Recursive
+	if err := s.FS.Chmod(r.Context(), req.Path, opts); err != nil {
 		s.writeFSError(w, r, err)
 		return
 	}
@@ -382,6 +425,99 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		res.Archive.Create = append(res.Archive.Create, fsops.Format7z)
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+type propsResponse struct {
+	Entry fsops.Entry  `json:"entry"`
+	ACL   *fsops.ACL   `json:"acl"`   // null for symlinks or without ACL support
+	Flags *fsops.Flags `json:"flags"` // null for special files or without support
+}
+
+// handleProps returns an entry with its ACL and inode attributes.
+func (s *Server) handleProps(w http.ResponseWriter, r *http.Request) {
+	p := r.URL.Query().Get("path")
+	e, err := s.FS.Stat(p)
+	if err != nil {
+		s.writeFSError(w, r, err)
+		return
+	}
+	res := propsResponse{Entry: e}
+	if acl, err := s.FS.GetACL(p); err == nil {
+		res.ACL = &acl
+	}
+	if fl, err := s.FS.GetFlags(p); err == nil {
+		res.Flags = &fl
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+type aclRequest struct {
+	Path string    `json:"path"`
+	ACL  fsops.ACL `json:"acl"`
+}
+
+// handleACL sets the ACL of one path; recursive changes go through the
+// "acl" job kind.
+func (s *Server) handleACL(w http.ResponseWriter, r *http.Request) {
+	var req aclRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.FS.SetACL(r.Context(), req.Path, fsops.SetACLOptions{ACL: req.ACL}); err != nil {
+		s.writeFSError(w, r, err)
+		return
+	}
+	s.notify(req.Path, false)
+	s.handlePropsFor(w, r, req.Path)
+}
+
+type flagsRequest struct {
+	Path  string      `json:"path"`
+	Flags fsops.Flags `json:"flags"`
+}
+
+func (s *Server) handleFlags(w http.ResponseWriter, r *http.Request) {
+	var req flagsRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.FS.SetFlags(req.Path, req.Flags); err != nil {
+		s.writeFSError(w, r, err)
+		return
+	}
+	s.handlePropsFor(w, r, req.Path)
+}
+
+func (s *Server) handlePropsFor(w http.ResponseWriter, r *http.Request, p string) {
+	r2 := r.Clone(r.Context())
+	r2.URL.RawQuery = "path=" + url.QueryEscape(p)
+	s.handleProps(w, r2)
+}
+
+type linkRequest struct {
+	Target   string         `json:"target"`
+	Path     string         `json:"path"`
+	Kind     fsops.LinkKind `json:"kind"`
+	Relative bool           `json:"relative"`
+	ownerFields
+}
+
+func (s *Server) handleLink(w http.ResponseWriter, r *http.Request) {
+	var req linkRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	own, err := s.ownership(req.ownerFields)
+	if err != nil {
+		s.writeFSError(w, r, err)
+		return
+	}
+	if err := s.FS.Link(req.Target, req.Path, fsops.LinkOptions{Ownership: own, Kind: req.Kind, Relative: req.Relative}); err != nil {
+		s.writeFSError(w, r, err)
+		return
+	}
+	s.notify(req.Path, false)
+	s.respondStat(w, r, req.Path)
 }
 
 // notify tells WebSocket clients that p's parent directory changed (and p

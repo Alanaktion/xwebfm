@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"path"
 	"slices"
-	"strconv"
 
 	"github.com/alanaktion/xwebfm/internal/fsops"
 	"github.com/alanaktion/xwebfm/internal/jobs"
@@ -17,15 +16,15 @@ import (
 // copy, move and extract use Items (extract: src archive, dst directory);
 // delete, chown, chmod and archive use Paths (archive also Dst and Format).
 type jobRequest struct {
-	Kind      string              `json:"kind"`
-	Items     []jobs.Item         `json:"items"`
-	Paths     []string            `json:"paths"`
-	Dst       string              `json:"dst"`
-	Reflink   fsops.ReflinkMode   `json:"reflink"`
-	Overwrite bool                `json:"overwrite"`
-	Recursive bool                `json:"recursive"`
-	Mode      string              `json:"mode"`
-	Format    fsops.ArchiveFormat `json:"format"`
+	Kind      string            `json:"kind"`
+	Items     []jobs.Item       `json:"items"`
+	Paths     []string          `json:"paths"`
+	Dst       string            `json:"dst"`
+	Reflink   fsops.ReflinkMode `json:"reflink"`
+	Overwrite bool              `json:"overwrite"`
+	Recursive bool              `json:"recursive"`
+	modeFields
+	Format fsops.ArchiveFormat `json:"format"`
 	// Password for encrypted archives. It is only held by the job's closure,
 	// never stored in the job's public state.
 	Password string `json:"password"`
@@ -34,6 +33,11 @@ type jobRequest struct {
 	DeleteOriginals bool `json:"deleteOriginals"`
 	// Query is the search for find jobs.
 	Query *fsops.FindQuery `json:"query"`
+	// Match is the fixowner target: "self" (each path's own owner) or
+	// "parent" (the owner of its parent directory).
+	Match string `json:"match"`
+	// ACL is applied by acl jobs.
+	ACL *fsops.ACL `json:"acl"`
 	ownerFields
 }
 
@@ -120,7 +124,7 @@ func (s *Server) buildJob(req jobRequest) (jobs.Spec, error) {
 			}
 		}
 
-	case "delete", "chown", "chmod":
+	case "delete", "chown", "chmod", "fixowner", "acl":
 		if len(req.Paths) == 0 {
 			return invalid("no paths")
 		}
@@ -129,7 +133,7 @@ func (s *Server) buildJob(req jobRequest) (jobs.Spec, error) {
 			dirs = append(dirs, path.Dir(p), p)
 		}
 		count = len(req.Paths)
-		if req.Kind == "delete" || req.Recursive {
+		if req.Kind == "delete" || req.Kind == "fixowner" || req.Recursive {
 			scan = req.Paths
 		}
 		switch req.Kind {
@@ -149,12 +153,40 @@ func (s *Server) buildJob(req jobRequest) (jobs.Spec, error) {
 				return s.FS.Chown(ctx, req.Paths[i], fsops.ChownOptions{UID: uid, GID: gid, Recursive: req.Recursive, Progress: p})
 			}
 		case "chmod":
-			mode, err := strconv.ParseUint(req.Mode, 8, 32)
-			if err != nil || mode > 0o7777 {
-				return invalid("invalid octal mode %q", req.Mode)
+			opts, err := req.modeFields.options()
+			if err != nil {
+				return jobs.Spec{}, err
+			}
+			opts.Recursive = req.Recursive
+			step = func(ctx context.Context, p *fsops.Progress, i int) error {
+				o := opts
+				o.Progress = p
+				return s.FS.Chmod(ctx, req.Paths[i], o)
+			}
+		case "fixowner":
+			if req.Match != "self" && req.Match != "parent" {
+				return invalid("match must be \"self\" or \"parent\"")
 			}
 			step = func(ctx context.Context, p *fsops.Progress, i int) error {
-				return s.FS.Chmod(ctx, req.Paths[i], fsops.ChmodOptions{Mode: uint32(mode), Recursive: req.Recursive, Progress: p})
+				ref := req.Paths[i]
+				if req.Match == "parent" {
+					ref = path.Dir(ref)
+				}
+				owner, err := s.FS.Stat(ref)
+				if err != nil {
+					return err
+				}
+				return s.FS.Chown(ctx, req.Paths[i], fsops.ChownOptions{
+					UID: int(owner.UID), GID: int(owner.GID), Recursive: true, Progress: p,
+				})
+			}
+		case "acl":
+			if req.ACL == nil {
+				return invalid("acl missing")
+			}
+			acl := *req.ACL
+			step = func(ctx context.Context, p *fsops.Progress, i int) error {
+				return s.FS.SetACL(ctx, req.Paths[i], fsops.SetACLOptions{ACL: acl, Recursive: req.Recursive, Progress: p})
 			}
 		}
 
@@ -287,6 +319,9 @@ func (s *Server) buildJob(req jobRequest) (jobs.Spec, error) {
 	spec.Run = func(ctx context.Context, p *fsops.Progress) []error {
 		for _, sp := range scan {
 			if entries, bytes, err := s.FS.Usage(ctx, sp); err == nil {
+				if req.Kind != "copy" {
+					bytes = 0 // only copies move data; others count entries
+				}
 				p.AddTotal(entries, bytes)
 			}
 		}
@@ -323,7 +358,7 @@ func jobTitle(kind string, items []jobs.Item) string {
 	verb := map[string]string{
 		"copy": "Copy", "move": "Move", "delete": "Delete", "chown": "Change owner of",
 		"chmod": "Change mode of", "extract": "Extract", "archive": "Archive",
-		"usage": "Disk usage of", "find": "Find in",
+		"usage": "Disk usage of", "find": "Find in", "fixowner": "Fix owner of", "acl": "Set ACL of",
 	}[kind]
 	what := path.Base(items[0].Src)
 	if items[0].Src == "/" {
