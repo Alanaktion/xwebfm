@@ -80,7 +80,11 @@ func TestFlags(t *testing.T) {
 	if _, err := f.GetFlags("/f"); err != nil {
 		t.Skipf("inode flags unsupported here: %v", err)
 	}
-	must(t, f.SetFlags("/f", Flags{Immutable: true, NoDump: true}))
+	if err := f.SetFlags("/f", Flags{Immutable: true, NoDump: true}); errors.Is(err, unix.EPERM) {
+		t.Skip("setting the immutable flag needs CAP_LINUX_IMMUTABLE")
+	} else {
+		must(t, err)
+	}
 	t.Cleanup(func() { f.SetFlags("/f", Flags{}) })
 	fl, err := f.GetFlags("/f")
 	must(t, err)

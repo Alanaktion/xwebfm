@@ -25,9 +25,15 @@ func TestDiskUsage(t *testing.T) {
 	// A filesystem mounted inside is not counted.
 	mnt := filepath.Join(d, "mnt")
 	must(t, os.Mkdir(mnt, 0o755))
-	if unix.Mount("tmpfs", mnt, "tmpfs", 0, "size=1m") == nil {
+	mounted := unix.Mount("tmpfs", mnt, "tmpfs", 0, "size=1m") == nil
+	if mounted {
 		t.Cleanup(func() { unix.Unmount(mnt, unix.MNT_DETACH) })
 		must(t, os.WriteFile(filepath.Join(mnt, "big"), make([]byte, 5000), 0o644))
+	}
+	// d, a, sub, sub/b, sub/hl; mnt counts only when nothing is mounted on it.
+	wantEntries, wantChildren := int64(5), 2
+	if !mounted {
+		wantEntries, wantChildren = 6, 3
 	}
 
 	prog := &Progress{}
@@ -36,11 +42,10 @@ func TestDiskUsage(t *testing.T) {
 	if rep.Size != 103 {
 		t.Errorf("total size %d, want 103 (hard link counted once, mount excluded)", rep.Size)
 	}
-	// d, a, sub, sub/b, sub/hl, and mnt is skipped entirely
-	if rep.Entries != 5 || prog.Snapshot().Entries != 5 {
-		t.Errorf("entries %d (progress %d), want 5", rep.Entries, prog.Snapshot().Entries)
+	if rep.Entries != wantEntries || prog.Snapshot().Entries != wantEntries {
+		t.Errorf("entries %d (progress %d), want %d", rep.Entries, prog.Snapshot().Entries, wantEntries)
 	}
-	if len(rep.Children) != 2 || rep.Children[0].Name != "sub" || rep.Children[0].Type != TypeDir {
+	if len(rep.Children) != wantChildren || rep.Children[0].Name != "sub" || rep.Children[0].Type != TypeDir {
 		t.Errorf("children %+v", rep.Children)
 	}
 	if os.Geteuid() == 0 {
