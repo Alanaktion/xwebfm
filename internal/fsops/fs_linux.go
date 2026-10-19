@@ -152,14 +152,70 @@ func (f *FS) entryAt(dirfd int, name, p string) (Entry, error) {
 		Nlink:   uint64(st.Nlink),
 		Inode:   st.Ino,
 		ModTime: time.Unix(st.Mtim.Unix()),
+		Disk:    st.Blocks * 512,
 	}
 	if e.Type == TypeSymlink {
 		buf := make([]byte, unix.PathMax)
 		if n, err := unix.Readlinkat(dirfd, name, buf); err == nil {
 			e.LinkTarget = string(buf[:n])
 		}
+	} else {
+		e.ACL = hasExtendedACL(dirfd, name)
 	}
 	return e, nil
+}
+
+// aclBaseSize is the xattr size of an ACL holding only the three base
+// entries (owner, group, other), which the mode bits already show.
+const aclBaseSize = 4 + 3*8
+
+// hasExtendedACL reports whether the entry has named ACL entries or a
+// default ACL. With an empty name dirfd is the entry itself (an O_PATH fd),
+// read through its /proc magic link; otherwise the name is looked up
+// relative to dirfd without following a final symlink.
+func hasExtendedACL(dirfd int, name string) bool {
+	get := unix.Lgetxattr
+	p := procPath(dirfd) + "/" + name
+	if name == "" {
+		get, p = unix.Getxattr, procPath(dirfd)
+	}
+	if n, err := get(p, "system.posix_acl_access", nil); err == nil && n > aclBaseSize {
+		return true
+	}
+	n, err := get(p, "system.posix_acl_default", nil)
+	return err == nil && n > 0
+}
+
+var fsTypes = map[int64]string{
+	0xEF53: "ext4", 0x9123683E: "btrfs", 0x58465342: "xfs", 0xCA451A4E: "bcachefs",
+	0x2FC12FC1: "zfs", 0x01021994: "tmpfs", 0x6969: "nfs", 0xFF534D42: "cifs",
+	0x794C7630: "overlay", 0xF2F52010: "f2fs", 0x4D44: "vfat", 0x2011BAB0: "exfat",
+	0x65735546: "fuse", 0x5346544E: "ntfs", 0x3153464A: "jfs", 0x52654973: "reiserfs",
+}
+
+// StatFS reports the filesystem holding p.
+func (f *FS) StatFS(p string) (FSInfo, error) {
+	fd, err := f.open(p, unix.O_PATH)
+	if err != nil {
+		return FSInfo{}, err
+	}
+	defer unix.Close(fd)
+	var st unix.Statfs_t
+	if err := unix.Fstatfs(fd, &st); err != nil {
+		return FSInfo{}, &fs.PathError{Op: "statfs", Path: CleanPath(p), Err: err}
+	}
+	bs := uint64(st.Bsize)
+	typ, ok := fsTypes[int64(st.Type)]
+	if !ok {
+		typ = fmt.Sprintf("0x%x", st.Type)
+	}
+	return FSInfo{
+		Type:    typ,
+		Total:   st.Blocks * bs,
+		Free:    st.Bfree * bs,
+		Avail:   st.Bavail * bs,
+		Reflink: typ == "btrfs" || typ == "xfs" || typ == "bcachefs",
+	}, nil
 }
 
 func fileType(mode uint32) FileType {

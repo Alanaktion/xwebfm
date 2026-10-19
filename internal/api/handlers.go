@@ -14,6 +14,8 @@ import (
 
 type listResponse struct {
 	Path    string        `json:"path"`
+	Dir     *fsops.Entry  `json:"dir,omitempty"` // the directory itself
+	FS      *fsops.FSInfo `json:"fs,omitempty"`
 	Entries []fsops.Entry `json:"entries"`
 }
 
@@ -24,7 +26,14 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		s.writeFSError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, listResponse{Path: p, Entries: entries})
+	res := listResponse{Path: p, Entries: entries}
+	if dir, err := s.FS.Stat(p); err == nil {
+		res.Dir = &dir
+	}
+	if info, err := s.FS.StatFS(p); err == nil {
+		res.FS = &info
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleStat(w http.ResponseWriter, r *http.Request) {

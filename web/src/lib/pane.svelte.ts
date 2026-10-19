@@ -1,6 +1,13 @@
-import { SvelteSet } from 'svelte/reactivity'
-import { api, type Entry } from './api'
+import { SvelteMap, SvelteSet } from 'svelte/reactivity'
+import { api, type Entry, type FindResult, type FSInfo } from './api'
 import { joinPath, parentPath } from './format'
+
+/** Search results shown in place of a directory listing. */
+export interface PaneResults {
+  label: string
+  root: string
+  truncated: boolean
+}
 
 /** A row in a pane: a real entry, or the ".." link to the parent. */
 export type Row = { parent: true; path: string } | { parent: false; entry: Entry }
@@ -15,6 +22,14 @@ export class PaneState {
   error = $state('')
   /** The path whose listing is in entries; differs from path while loading a new one. */
   loadedPath = $state<string | null>(null)
+  /** The listed directory itself and its filesystem. */
+  dir = $state<Entry | null>(null)
+  fs = $state<FSInfo | null>(null)
+  /** Set while showing search results instead of the directory. */
+  results = $state<PaneResults | null>(null)
+  resultEntries = $state<Entry[]>([])
+  /** Folder sizes computed by disk-usage scans, by path. */
+  dirSizes = new SvelteMap<string, number>()
   #anchor = 0 // start of a shift-click range
   #seq = 0 // identifies the latest load, so slower stale responses are dropped
 
@@ -22,7 +37,9 @@ export class PaneState {
   stale = $derived(this.loadedPath !== this.path)
 
   rows: Row[] = $derived(
-    this.stale
+    this.results
+      ? this.resultEntries.map((entry) => ({ parent: false as const, entry }))
+      : this.stale
       ? []
       : [
           ...(this.path === '/' ? [] : [{ parent: true as const, path: parentPath(this.path) }]),
@@ -36,6 +53,7 @@ export class PaneState {
 
   /** Loads (or refreshes) the listing of path. Resolves false if superseded. */
   async load(): Promise<boolean> {
+    if (this.results) return this.#refreshResults()
     const seq = ++this.#seq
     const path = this.path
     this.loading = true
@@ -44,6 +62,8 @@ export class PaneState {
       if (seq !== this.#seq) return false
       this.path = res.path
       this.entries = res.entries
+      this.dir = res.dir ?? null
+      this.fs = res.fs ?? null
       this.error = ''
       const present = new Set(res.entries.map((e) => e.path))
       for (const p of this.selected) if (!present.has(p)) this.selected.delete(p)
@@ -58,7 +78,30 @@ export class PaneState {
     return true
   }
 
+  /** Shows search results in place of the listing. */
+  showResults(res: FindResult, label: string) {
+    this.results = { label, root: res.root, truncated: res.truncated }
+    this.resultEntries = res.entries
+    this.selected.clear()
+    this.cursor = 0
+  }
+
+  /** Re-stats result entries after changes, dropping ones that are gone. */
+  async #refreshResults(): Promise<boolean> {
+    const entries = this.resultEntries
+    if (entries.length > 500) return true
+    const fresh = await Promise.all(entries.map((e) => api.stat(e.path).catch(() => null)))
+    if (this.resultEntries !== entries) return false
+    this.resultEntries = fresh.filter((e): e is Entry => e !== null)
+    const present = new Set(this.resultEntries.map((e) => e.path))
+    for (const p of this.selected) if (!present.has(p)) this.selected.delete(p)
+    this.cursor = Math.min(this.cursor, Math.max(this.rows.length - 1, 0))
+    return true
+  }
+
   navigate(path: string) {
+    this.results = null
+    this.resultEntries = []
     // When going up, put the cursor on the directory we came from.
     const from = this.path
     this.path = path

@@ -55,6 +55,9 @@ type Job struct {
 	Finished *time.Time             `json:"finished,omitempty"`
 	Progress fsops.ProgressSnapshot `json:"progress"`
 	Errors   []string               `json:"errors,omitempty"`
+	// HasResult is set when the job produced a result (e.g. search hits),
+	// fetched separately with Manager.Result.
+	HasResult bool `json:"hasResult,omitempty"`
 	// Dirs are the directories the job changes, so clients can refresh
 	// views of them when it finishes.
 	Dirs []string `json:"dirs,omitempty"`
@@ -69,6 +72,9 @@ type Spec struct {
 	Items []Item
 	Dirs  []string
 	Run   func(ctx context.Context, p *fsops.Progress) []error
+	// Result, if set, is called once Run has returned without being
+	// cancelled; a non-nil value is kept as the job's result.
+	Result func() any
 }
 
 // Event is pushed to subscribers. (The WebSocket endpoint first sends a
@@ -82,6 +88,7 @@ type Event struct {
 
 type entry struct {
 	job    Job
+	result any
 	spec   Spec
 	prog   *fsops.Progress
 	cancel context.CancelFunc // set while running
@@ -215,6 +222,20 @@ func (m *Manager) listLocked() []Job {
 		out = append(out, m.jobs[id].job)
 	}
 	return out
+}
+
+// Result returns a finished job's result.
+func (m *Manager) Result(id string) (any, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.jobs[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if e.result == nil {
+		return nil, ErrState
+	}
+	return e.result, nil
 }
 
 // Cancel stops a queued or running job. A running job finishes in the
@@ -352,6 +373,10 @@ func (m *Manager) finishLocked(e *entry, state State, errs []error) {
 		}
 	}
 	e.cancel = nil
+	if state != Cancelled && e.spec.Result != nil {
+		e.result = e.spec.Result()
+		e.job.HasResult = e.result != nil
+	}
 	m.publishJobLocked(e)
 	if state != Cancelled || e.job.Started != nil {
 		m.publishLocked(Event{Type: "changed", Dirs: e.job.Dirs})

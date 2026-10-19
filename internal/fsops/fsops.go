@@ -58,6 +58,22 @@ type Entry struct {
 	Inode      uint64    `json:"inode"`
 	ModTime    time.Time `json:"mtime"`
 	LinkTarget string    `json:"linkTarget,omitempty"`
+	// Disk is the space allocated on disk (st_blocks), which differs from
+	// Size for sparse, compressed or reflinked files.
+	Disk int64 `json:"disk"`
+	// ACL is set when the entry has an extended POSIX ACL (ls shows "+").
+	ACL bool `json:"acl,omitempty"`
+}
+
+// FSInfo describes the filesystem holding a path.
+type FSInfo struct {
+	Type  string `json:"type"`
+	Total uint64 `json:"total"`
+	Free  uint64 `json:"free"`
+	Avail uint64 `json:"avail"` // available to unprivileged users
+	// Reflink is set for filesystem types that support FICLONE (btrfs,
+	// bcachefs, and xfs when created with reflink support).
+	Reflink bool `json:"reflink"`
 }
 
 // ChownOptions controls Chown. A UID or GID of -1 leaves it unchanged.

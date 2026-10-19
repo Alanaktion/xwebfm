@@ -24,6 +24,7 @@ export class JobsStore {
   #timer: ReturnType<typeof setTimeout> | undefined
   #samples = new Map<string, { bytes: number; t: number }>()
   #closed = false
+  #waiters = new Map<string, ((job: Job) => void)[]>()
 
   constructor(handlers: Handlers) {
     this.#handlers = handlers
@@ -47,6 +48,15 @@ export class JobsStore {
     }
   }
 
+  /** Resolves once the job has finished (in any state). */
+  waitFor(id: string): Promise<Job> {
+    const known = this.jobs.find((j) => j.id === id)
+    if (known && isFinished(known.state)) return Promise.resolve(known)
+    return new Promise((resolve) => {
+      this.#waiters.set(id, [...(this.#waiters.get(id) ?? []), resolve])
+    })
+  }
+
   close() {
     this.#closed = true
     clearTimeout(this.#timer)
@@ -57,6 +67,11 @@ export class JobsStore {
     switch (ev.type) {
       case 'snapshot':
         this.jobs = ev.jobs
+        for (const j of ev.jobs) {
+          if (!isFinished(j.state)) continue
+          for (const resolve of this.#waiters.get(j.id) ?? []) resolve(j)
+          this.#waiters.delete(j.id)
+        }
         this.#handlers.onchanged(null)
         break
       case 'job': {
@@ -65,7 +80,11 @@ export class JobsStore {
         if (i >= 0) this.jobs[i] = ev.job
         else this.jobs.push(ev.job)
         this.#sample(ev.job)
-        if (prev && !isFinished(prev.state) && isFinished(ev.job.state)) this.#handlers.onfinished(ev.job)
+        if (isFinished(ev.job.state)) {
+          if (prev && !isFinished(prev.state)) this.#handlers.onfinished(ev.job)
+          for (const resolve of this.#waiters.get(ev.job.id) ?? []) resolve(ev.job)
+          this.#waiters.delete(ev.job.id)
+        }
         break
       }
       case 'removed':

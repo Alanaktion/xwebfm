@@ -16,15 +16,30 @@ export interface Entry {
   inode: number
   mtime: string
   linkTarget?: string
+  /** Bytes allocated on disk. */
+  disk: number
+  /** Has an extended POSIX ACL. */
+  acl?: boolean
+}
+
+export interface FSInfo {
+  type: string
+  total: number
+  free: number
+  avail: number
+  reflink: boolean
 }
 
 export interface Account {
   id: number
   name: string
+  home?: string
 }
 
 export interface ListResponse {
   path: string
+  dir?: Entry
+  fs?: FSInfo
   entries: Entry[]
 }
 
@@ -66,7 +81,7 @@ export interface JobProgress {
 
 export interface Job {
   id: string
-  kind: 'copy' | 'move' | 'delete' | 'chown' | 'chmod' | 'extract' | 'archive'
+  kind: 'copy' | 'move' | 'delete' | 'chown' | 'chmod' | 'extract' | 'archive' | 'usage' | 'find' | 'fixowner' | 'acl'
   title: string
   state: JobState
   items: { src: string; dst?: string }[]
@@ -76,6 +91,48 @@ export interface Job {
   progress: JobProgress
   errors?: string[]
   dirs?: string[]
+  hasResult?: boolean
+}
+
+export interface UsageItem {
+  name: string
+  path: string
+  type: FileType
+  size: number
+  disk: number
+  entries: number
+}
+
+export interface UsageReport {
+  path: string
+  size: number
+  disk: number
+  entries: number
+  children: UsageItem[]
+  byOwner: { uid: number; user?: string; size: number; disk: number; entries: number }[]
+}
+
+export interface FindQuery {
+  name?: string
+  type?: FileType
+  uid?: number
+  gid?: number
+  minSize?: number
+  maxSize?: number
+  modifiedAfter?: string
+  modifiedBefore?: string
+  orphaned?: boolean
+  foreignOwner?: boolean
+  worldWritable?: boolean
+  setuid?: boolean
+  crossMounts?: boolean
+}
+
+export interface FindResult {
+  root: string
+  entries: Entry[]
+  truncated: boolean
+  scanned: number
 }
 
 export type JobRequest =
@@ -84,6 +141,8 @@ export type JobRequest =
   | { kind: 'delete'; paths: string[] }
   | { kind: 'chown'; paths: string[]; uid?: number; gid?: number; recursive: boolean }
   | { kind: 'chmod'; paths: string[]; mode: string; recursive: boolean }
+  | { kind: 'usage'; paths: [string] }
+  | { kind: 'find'; paths: [string]; query: FindQuery }
   | ({
       kind: 'extract'
       items: { src: string; dst: string }[]
@@ -177,5 +236,6 @@ export const api = {
     cancel: (id: string) => request<Job>('POST', `/api/v1/jobs/${id}/cancel`, {}),
     dismiss: (id: string) => request<null>('POST', `/api/v1/jobs/${id}/dismiss`, {}),
     clear: () => request<null>('POST', '/api/v1/jobs/clear', {}),
+    result: <T>(id: string) => request<T>('GET', `/api/v1/jobs/${id}/result`),
   },
 }

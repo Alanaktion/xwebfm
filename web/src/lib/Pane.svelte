@@ -36,6 +36,12 @@
   const icon: Record<string, string> = { dir: '📁', symlink: '🔗', file: '📄' }
   const fmtDate = (s: string) => new Date(s).toLocaleString()
 
+  /** A result's path relative to the search root. */
+  function relative(p: string): string {
+    const root = pane.results?.root ?? '/'
+    return root === '/' ? p.slice(1) : p.slice(root.length + 1)
+  }
+
   let dropTarget = $state<string | null>(null)
   let body: HTMLElement
 
@@ -110,13 +116,23 @@
   aria-label="Pane {index + 1}"
 >
   <header>
-    <nav class="crumbs mono">
-      <button class="link" onclick={() => pane.navigate('/')}>/</button>
-      {#each crumbs as c, i}
-        {#if i > 0}<span>/</span>{/if}
-        <button class="link" onclick={() => pane.navigate(c.path)}>{c.name}</button>
-      {/each}
-    </nav>
+    {#if pane.results}
+      <div class="results-bar">
+        <button onclick={() => pane.navigate(pane.path)} title="Back to {pane.path}">← Back</button>
+        <span>
+          🔍 {pane.results.label}: {pane.resultEntries.length}{pane.results.truncated ? '+' : ''}
+          result{pane.resultEntries.length === 1 ? '' : 's'} in <span class="mono">{pane.results.root}</span>
+        </span>
+      </div>
+    {:else}
+      <nav class="crumbs mono">
+        <button class="link" onclick={() => pane.navigate('/')}>/</button>
+        {#each crumbs as c, i}
+          {#if i > 0}<span>/</span>{/if}
+          <button class="link" onclick={() => pane.navigate(c.path)}>{c.name}</button>
+        {/each}
+      </nav>
+    {/if}
     <span class="count">
       {#if pane.loading && !pane.stale}<span class="spinner small" aria-label="Refreshing"></span>{/if}
       {#if pane.selected.size}{pane.selected.size} selected{/if}
@@ -126,12 +142,12 @@
 
   <div class="body" bind:this={body}>
     {#if pane.error}<p class="error">{pane.error}</p>{/if}
-    {#if pane.stale}
+    {#if pane.stale && !pane.results}
       <div class="loading" role="status">
         <span class="spinner"></span> Loading <span class="mono">{pane.path}</span>…
       </div>
     {/if}
-    <table class:hidden={pane.stale}>
+    <table class:hidden={pane.stale && !pane.results}>
       <thead>
         <tr>
           <th>Name</th>
@@ -160,10 +176,15 @@
             {#if e}
               <td class="name">
                 <span aria-hidden="true">{icon[e.type] ?? '•'}</span>
-                {e.name}{#if e.type === 'dir'}/{/if}
+                {pane.results ? relative(e.path) : e.name}{#if e.type === 'dir'}/{/if}
                 {#if e.linkTarget}<span class="muted">→ {e.linkTarget}</span>{/if}
               </td>
-              <td class="num">{e.type === 'dir' ? '' : humanSize(e.size)}</td>
+              <td class="num">
+                {#if e.type !== 'dir'}{humanSize(e.size)}{:else if pane.dirSizes.has(e.path)}<span
+                    class="computed"
+                    title="Total size from the last disk-usage scan">{humanSize(pane.dirSizes.get(e.path)!)}</span
+                  >{/if}
+              </td>
               <td class="mono" title={octal(e.mode)}>{modeString(e.type, e.mode)}</td>
               <td class="mono">{e.user ?? e.uid}:{e.group ?? e.gid}</td>
               <td class="muted date">{fmtDate(e.mtime)}</td>
@@ -174,10 +195,17 @@
         {/each}
       </tbody>
     </table>
-    {#if !pane.stale && !pane.error && pane.entries.length === 0}
+    {#if pane.results && pane.resultEntries.length === 0}
+      <p class="muted empty">No matches</p>
+    {:else if !pane.results && !pane.stale && !pane.error && pane.entries.length === 0}
       <p class="muted empty">Empty directory — drop files here to upload</p>
     {/if}
   </div>
+  {#if pane.fs && !pane.results}
+    <footer class="fsinfo" title="{humanSize(pane.fs.free)} free including space reserved for root">
+      {humanSize(pane.fs.avail)} free of {humanSize(pane.fs.total)} · {pane.fs.type}{pane.fs.reflink ? ' · reflinks' : ''}
+    </footer>
+  {/if}
 </section>
 
 <style>
@@ -226,6 +254,17 @@
   .muted { color: var(--muted); }
   .empty { text-align: center; padding: 24px; }
   .hidden { display: none; }
+  .results-bar { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+  .results-bar span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .results-bar button { padding: 0 8px; }
+  .computed { font-style: italic; color: var(--muted); }
+  .fsinfo {
+    border-top: 1px solid var(--border);
+    padding: 3px 10px;
+    font-size: 12px;
+    color: var(--muted);
+    background: var(--hover);
+  }
   /* Fades in after a short delay so fast loads don't flash. */
   .loading {
     display: flex;

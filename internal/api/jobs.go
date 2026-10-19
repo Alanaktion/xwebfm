@@ -32,6 +32,8 @@ type jobRequest struct {
 	// DeleteOriginals removes the archive (extract) or the sources
 	// (archive) once the job has succeeded.
 	DeleteOriginals bool `json:"deleteOriginals"`
+	// Query is the search for find jobs.
+	Query *fsops.FindQuery `json:"query"`
 	ownerFields
 }
 
@@ -156,6 +158,52 @@ func (s *Server) buildJob(req jobRequest) (jobs.Spec, error) {
 			}
 		}
 
+	case "usage", "find":
+		if len(req.Paths) != 1 {
+			return invalid("%s needs exactly one path", req.Kind)
+		}
+		root := req.Paths[0]
+		spec.Items = []jobs.Item{{Src: root}}
+		count = 1
+		if req.Kind == "usage" {
+			var report *fsops.UsageReport
+			step = func(ctx context.Context, p *fsops.Progress, _ int) error {
+				r, err := s.FS.DiskUsage(ctx, root, p)
+				if err == nil {
+					report = &r
+				}
+				return err
+			}
+			spec.Result = func() any {
+				if report == nil {
+					return nil
+				}
+				return report
+			}
+			break
+		}
+		q := fsops.FindQuery{}
+		if req.Query != nil {
+			q = *req.Query
+		}
+		if err := q.Validate(); err != nil {
+			return jobs.Spec{}, err
+		}
+		var found *fsops.FindResult
+		step = func(ctx context.Context, p *fsops.Progress, _ int) error {
+			r, err := s.FS.Find(ctx, root, q, p)
+			if err == nil {
+				found = &r
+			}
+			return err
+		}
+		spec.Result = func() any {
+			if found == nil {
+				return nil
+			}
+			return found
+		}
+
 	case "extract":
 		own, err := s.ownership(req.ownerFields)
 		if err != nil {
@@ -275,6 +323,7 @@ func jobTitle(kind string, items []jobs.Item) string {
 	verb := map[string]string{
 		"copy": "Copy", "move": "Move", "delete": "Delete", "chown": "Change owner of",
 		"chmod": "Change mode of", "extract": "Extract", "archive": "Archive",
+		"usage": "Disk usage of", "find": "Find in",
 	}[kind]
 	what := path.Base(items[0].Src)
 	if items[0].Src == "/" {
@@ -298,6 +347,15 @@ func jobTitle(kind string, items []jobs.Item) string {
 
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.Jobs.List())
+}
+
+func (s *Server) handleJobResult(w http.ResponseWriter, r *http.Request) {
+	res, err := s.Jobs.Result(r.PathValue("id"))
+	if err != nil {
+		writeJobError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {

@@ -1,9 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { api, ApiError, type Account, type Entry, type Job } from './lib/api'
+  import { api, ApiError, type Account, type Entry, type FindResult, type Job, type UsageReport } from './lib/api'
   import { archiveInfo, humanSize } from './lib/format'
   import ExtractDialog from './lib/ExtractDialog.svelte'
   import ArchiveDialog from './lib/ArchiveDialog.svelte'
+  import UsageDialog from './lib/UsageDialog.svelte'
+  import FindDialog from './lib/FindDialog.svelte'
   import { isFinished, JobsStore } from './lib/jobs.svelte'
   import JobsPanel from './lib/JobsPanel.svelte'
   import { PaneState, type Row } from './lib/pane.svelte'
@@ -24,6 +26,8 @@
     | { kind: 'chmod'; entries: Entry[] }
     | { kind: 'extract'; archives: Entry[] }
     | { kind: 'archive'; sources: Entry[] }
+    | { kind: 'usage'; path: string }
+    | { kind: 'find'; root: string; rootOwner: string }
 
   // Both pane directories live in the URL hash (#l=/a&r=/b) so reloads keep them.
   const hash = new URLSearchParams(location.hash.slice(1))
@@ -72,6 +76,30 @@
     return () => jobs.close()
   })
 
+  /** Shows folder totals from a disk-usage report in both panes. */
+  function showSizes(report: UsageReport) {
+    for (const p of panes) {
+      p.dirSizes.set(report.path, report.size)
+      for (const c of report.children) if (c.type === 'dir') p.dirSizes.set(c.path, c.size)
+    }
+  }
+
+  /** Waits for a search job and shows its results in the pane it started from. */
+  async function startFind(job: Job, label: string) {
+    const target = pane
+    dialog = null
+    status = { text: `Searching ${job.items[0].src}…`, error: false }
+    const done = await jobs.waitFor(job.id)
+    if (!done.hasResult) return // cancelled or failed; the job panel says why
+    const res = await api.jobs.result<FindResult>(done.id)
+    target.showResults(res, label)
+    status = {
+      text: `${res.entries.length}${res.truncated ? '+' : ''} matches among ${res.scanned.toLocaleString()} items`,
+      error: false,
+    }
+    api.jobs.dismiss(done.id).catch(() => {})
+  }
+
   function queued(job: Job) {
     dialog = null
     jobsOpen = true
@@ -109,6 +137,13 @@
     },
     upload: () => uploadInput.click(),
     extract: () => archives.length && (dialog = { kind: 'extract', archives }),
+    usage: () => (dialog = { kind: 'usage', path: pane.path }),
+    find: () =>
+      (dialog = {
+        kind: 'find',
+        root: pane.path,
+        rootOwner: pane.dir ? (pane.dir.user ?? String(pane.dir.uid)) : 'its owner',
+      }),
     archive: () => targets.length && (dialog = { kind: 'archive', sources: targets }),
   }
 
@@ -151,6 +186,16 @@
     if (ctrl && ev.key === 'a') {
       ev.preventDefault()
       pane.selectAll()
+      return
+    }
+    if (ctrl && ev.key === 'u') {
+      ev.preventDefault()
+      actions.usage()
+      return
+    }
+    if (ev.altKey && ev.key === 'F7') {
+      ev.preventDefault()
+      actions.find()
       return
     }
     if (ctrl && ev.key === 'r') {
@@ -238,6 +283,8 @@
       <button onclick={actions.upload}>Upload</button>
       <button onclick={actions.extract} disabled={!archives.length}>Extract</button>
       <button onclick={actions.archive} disabled={!targets.length || !createFormats.length}>Archive</button>
+      <button onclick={actions.find} title="Alt+F7">Find</button>
+      <button onclick={actions.usage} title="Ctrl+U">Usage</button>
       <span class="spacer"></span>
       <button class="jobs-toggle" class:on={jobsOpen} onclick={() => (jobsOpen = !jobsOpen)} aria-expanded={jobsOpen}>
         Jobs
@@ -296,6 +343,26 @@
     {groups}
     onclose={() => (dialog = null)}
     onqueued={queued}
+  />
+{:else if dialog?.kind === 'usage'}
+  <UsageDialog
+    path={dialog.path}
+    store={jobs}
+    onclose={() => (dialog = null)}
+    onreport={showSizes}
+    onopen={(p) => {
+      dialog = null
+      pane.navigate(p)
+    }}
+  />
+{:else if dialog?.kind === 'find'}
+  <FindDialog
+    root={dialog.root}
+    rootOwner={dialog.rootOwner}
+    {users}
+    {groups}
+    onclose={() => (dialog = null)}
+    onstart={startFind}
   />
 {:else if dialog?.kind === 'chmod'}
   <ChmodDialog entries={dialog.entries} onclose={() => (dialog = null)} ondone={done} onqueued={queued} />

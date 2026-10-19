@@ -46,6 +46,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/fs/download", s.handleDownload)
 	mux.HandleFunc("GET /api/v1/jobs", s.handleListJobs)
 	mux.HandleFunc("POST /api/v1/jobs", s.handleSubmitJob)
+	mux.HandleFunc("GET /api/v1/jobs/{id}/result", s.handleJobResult)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/cancel", s.handleCancelJob)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/dismiss", s.handleDismissJob)
 	mux.HandleFunc("POST /api/v1/jobs/clear", s.handleClearJobs)

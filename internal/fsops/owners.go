@@ -14,6 +14,7 @@ import (
 type Account struct {
 	ID   uint32 `json:"id"`
 	Name string `json:"name"`
+	Home string `json:"home,omitempty"` // users only
 }
 
 // Owners resolves UIDs and GIDs to names by reading passwd and group files
@@ -31,6 +32,7 @@ type table struct {
 	mtime  time.Time
 	byID   map[uint32]string
 	byName map[string]uint32
+	homes  map[uint32]string
 }
 
 // NewOwners returns an Owners reading the standard /etc files.
@@ -86,33 +88,34 @@ func (o *Owners) load(t *table, file string) *table {
 	st, err := os.Stat(file)
 	if err != nil {
 		if t.byID == nil {
-			t.byID, t.byName = map[uint32]string{}, map[string]uint32{}
+			t.byID, t.byName, t.homes = map[uint32]string{}, map[string]uint32{}, map[uint32]string{}
 		}
 		return t
 	}
 	if t.byID != nil && st.ModTime().Equal(t.mtime) {
 		return t
 	}
-	byID, byName := parseIDFile(file)
-	t.mtime, t.byID, t.byName = st.ModTime(), byID, byName
+	byID, byName, homes := parseIDFile(file)
+	t.mtime, t.byID, t.byName, t.homes = st.ModTime(), byID, byName, homes
 	return t
 }
 
 func (t *table) list() []Account {
 	out := make([]Account, 0, len(t.byID))
 	for id, name := range t.byID {
-		out = append(out, Account{ID: id, Name: name})
+		out = append(out, Account{ID: id, Name: name, Home: t.homes[id]})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
 
-// parseIDFile parses passwd/group style files: name:x:id:...
-func parseIDFile(file string) (map[uint32]string, map[string]uint32) {
-	byID, byName := map[uint32]string{}, map[string]uint32{}
+// parseIDFile parses passwd/group style files: name:x:id:...; for passwd
+// it also returns home directories (field 6).
+func parseIDFile(file string) (map[uint32]string, map[string]uint32, map[uint32]string) {
+	byID, byName, homes := map[uint32]string{}, map[string]uint32{}, map[uint32]string{}
 	f, err := os.Open(file)
 	if err != nil {
-		return byID, byName
+		return byID, byName, homes
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
@@ -121,7 +124,7 @@ func parseIDFile(file string) (map[uint32]string, map[string]uint32) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		fields := strings.SplitN(line, ":", 4)
+		fields := strings.SplitN(line, ":", 7)
 		if len(fields) < 3 {
 			continue
 		}
@@ -132,8 +135,11 @@ func parseIDFile(file string) (map[uint32]string, map[string]uint32) {
 		// First entry wins for duplicate IDs, matching getpwuid behaviour.
 		if _, ok := byID[uint32(id)]; !ok {
 			byID[uint32(id)] = fields[0]
+			if len(fields) == 7 && fields[5] != "" {
+				homes[uint32(id)] = fields[5]
+			}
 		}
 		byName[fields[0]] = uint32(id)
 	}
-	return byID, byName
+	return byID, byName, homes
 }

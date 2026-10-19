@@ -4,6 +4,7 @@ package fsops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -84,6 +85,10 @@ func (f *FS) Usage(ctx context.Context, p string) (entries, bytes int64, err err
 	return entries, bytes, err
 }
 
+// errSkipDir, returned by a walk callback for a directory, skips its
+// contents.
+var errSkipDir = errors.New("skip directory")
+
 // walk calls fn for fd (an O_PATH|O_NOFOLLOW handle on p) and, if recursive
 // and fd is a directory, for every descendant. Children are opened relative
 // to their parent's fd with O_NOFOLLOW so the walk can't be redirected by a
@@ -97,6 +102,9 @@ func walk(ctx context.Context, fd int, p string, recursive bool, fn func(fd int,
 		return &fs.PathError{Op: "stat", Path: p, Err: err}
 	}
 	if err := fn(fd, p, &st); err != nil {
+		if err == errSkipDir {
+			return nil
+		}
 		return err
 	}
 	if !recursive || st.Mode&unix.S_IFMT != unix.S_IFDIR {

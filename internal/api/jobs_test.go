@@ -246,3 +246,50 @@ func TestArchiveJobs(t *testing.T) {
 		}
 	}
 }
+
+func TestUsageAndFindJobs(t *testing.T) {
+	ts, dir := newTestServer(t)
+	os.MkdirAll(filepath.Join(dir, "d/sub"), 0o755)
+	os.WriteFile(filepath.Join(dir, "d/sub/big.iso"), make([]byte, 4096), 0o644)
+	os.WriteFile(filepath.Join(dir, "d/notes.txt"), []byte("x"), 0o644)
+
+	var j jobs.Job
+	if code := doJSON(t, "POST", ts.URL+"/api/v1/jobs", `{"kind":"usage","paths":["/d"]}`, &j); code != http.StatusAccepted {
+		t.Fatalf("usage submit %d", code)
+	}
+	if j = waitJob(t, ts.URL, j.ID); j.State != jobs.Done || !j.HasResult {
+		t.Fatalf("usage job %+v", j)
+	}
+	var rep struct {
+		Size     int64 `json:"size"`
+		Children []struct {
+			Name string `json:"name"`
+			Size int64  `json:"size"`
+		} `json:"children"`
+	}
+	doJSON(t, "GET", ts.URL+"/api/v1/jobs/"+j.ID+"/result", "", &rep)
+	if rep.Size != 4097 || len(rep.Children) != 2 {
+		t.Errorf("usage report %+v", rep)
+	}
+
+	doJSON(t, "POST", ts.URL+"/api/v1/jobs", `{"kind":"find","paths":["/d"],"query":{"name":"*.iso"}}`, &j)
+	j = waitJob(t, ts.URL, j.ID)
+	var found struct {
+		Entries []struct {
+			Path string `json:"path"`
+		} `json:"entries"`
+	}
+	doJSON(t, "GET", ts.URL+"/api/v1/jobs/"+j.ID+"/result", "", &found)
+	if len(found.Entries) != 1 || found.Entries[0].Path != "/d/sub/big.iso" {
+		t.Errorf("find result %+v", found)
+	}
+	if code := doJSON(t, "POST", ts.URL+"/api/v1/jobs", `{"kind":"find","paths":["/d"],"query":{"name":"["}}`, nil); code != http.StatusBadRequest {
+		t.Errorf("bad pattern: %d", code)
+	}
+
+	var lr listResponse
+	doJSON(t, "GET", ts.URL+"/api/v1/fs/list?path=/d", "", &lr)
+	if lr.Dir == nil || lr.Dir.Path != "/d" || lr.FS == nil || lr.FS.Total == 0 {
+		t.Errorf("list extras: dir=%+v fs=%+v", lr.Dir, lr.FS)
+	}
+}

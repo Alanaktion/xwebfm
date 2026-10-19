@@ -19,6 +19,7 @@ func (f *FS) Root() string                                                { retu
 func (f *FS) Close() error                                                { return nil }
 func (f *FS) List(p string) ([]Entry, error)                              { return nil, errUnsupported }
 func (f *FS) Stat(p string) (Entry, error)                                { return Entry{}, errUnsupported }
+func (f *FS) StatFS(p string) (FSInfo, error)                             { return FSInfo{}, errUnsupported }
 func (f *FS) Chown(ctx context.Context, p string, o ChownOptions) error   { return errUnsupported }
 func (f *FS) Chmod(ctx context.Context, p string, o ChmodOptions) error   { return errUnsupported }
 func (f *FS) Rename(p, name string) error                                 { return errUnsupported }
@@ -49,3 +50,9 @@ func (f *FS) CreateArchive(ctx context.Context, sources []string, dst string, o 
 
 // SevenZipAvailable reports whether .7z archives can be created.
 func SevenZipAvailable() bool { return false }
+func (f *FS) DiskUsage(ctx context.Context, p string, prog *Progress) (UsageReport, error) {
+	return UsageReport{}, errUnsupported
+}
+func (f *FS) Find(ctx context.Context, root string, q FindQuery, prog *Progress) (FindResult, error) {
+	return FindResult{}, errUnsupported
+}
