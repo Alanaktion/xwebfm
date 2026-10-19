@@ -54,6 +54,44 @@ export interface MoveResult {
   copy?: CopyResult
 }
 
+export type JobState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
+
+export interface JobProgress {
+  totalEntries: number
+  totalBytes: number
+  entries: number
+  bytes: number
+  current?: string
+}
+
+export interface Job {
+  id: string
+  kind: 'copy' | 'move' | 'delete' | 'chown' | 'chmod'
+  title: string
+  state: JobState
+  items: { src: string; dst?: string }[]
+  created: string
+  started?: string
+  finished?: string
+  progress: JobProgress
+  errors?: string[]
+  dirs?: string[]
+}
+
+export type JobRequest =
+  | ({ kind: 'copy'; items: { src: string; dst: string }[]; reflink: ReflinkMode; overwrite: boolean } & OwnerFields)
+  | ({ kind: 'move'; items: { src: string; dst: string }[]; overwrite: boolean } & OwnerFields)
+  | { kind: 'delete'; paths: string[] }
+  | { kind: 'chown'; paths: string[]; uid?: number; gid?: number; recursive: boolean }
+  | { kind: 'chmod'; paths: string[]; mode: string; recursive: boolean }
+
+/** Events streamed over /api/v1/ws. */
+export type JobEvent =
+  | { type: 'snapshot'; jobs: Job[] }
+  | { type: 'job'; job: Job }
+  | { type: 'removed'; id: string }
+  | { type: 'changed'; dirs?: string[] }
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -114,4 +152,11 @@ export const api = {
   },
 
   downloadUrl: (path: string) => `/api/v1/fs/download${q(path)}`,
+
+  jobs: {
+    submit: (req: JobRequest) => request<Job>('POST', '/api/v1/jobs', req),
+    cancel: (id: string) => request<Job>('POST', `/api/v1/jobs/${id}/cancel`, {}),
+    dismiss: (id: string) => request<null>('POST', `/api/v1/jobs/${id}/dismiss`, {}),
+    clear: () => request<null>('POST', '/api/v1/jobs/clear', {}),
+  },
 }

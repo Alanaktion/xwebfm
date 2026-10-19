@@ -13,13 +13,18 @@ import (
 	"syscall"
 
 	"github.com/alanaktion/xwebfm/internal/fsops"
+	"github.com/alanaktion/xwebfm/internal/jobs"
 )
 
 // Server holds the dependencies of the HTTP handlers.
 type Server struct {
 	FS     *fsops.FS
+	Jobs   *jobs.Manager
 	Log    *slog.Logger
 	Static http.Handler // serves the SPA; may be nil
+	// OriginPatterns lists extra origins (host patterns) allowed to open the
+	// WebSocket, for proxies that don't preserve the Host header.
+	OriginPatterns []string
 }
 
 // Handler returns the root HTTP handler, including middleware.
@@ -39,6 +44,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/fs/mkdir", s.handleMkdir)
 	mux.HandleFunc("POST /api/v1/fs/upload", s.handleUpload)
 	mux.HandleFunc("GET /api/v1/fs/download", s.handleDownload)
+	mux.HandleFunc("GET /api/v1/jobs", s.handleListJobs)
+	mux.HandleFunc("POST /api/v1/jobs", s.handleSubmitJob)
+	mux.HandleFunc("POST /api/v1/jobs/{id}/cancel", s.handleCancelJob)
+	mux.HandleFunc("POST /api/v1/jobs/{id}/dismiss", s.handleDismissJob)
+	mux.HandleFunc("POST /api/v1/jobs/clear", s.handleClearJobs)
+	mux.HandleFunc("GET /api/v1/ws", s.handleWS)
 	mux.HandleFunc("GET /api/v1/users", s.handleUsers)
 	mux.HandleFunc("GET /api/v1/groups", s.handleGroups)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {

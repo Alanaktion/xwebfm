@@ -3,6 +3,7 @@
 package fsops
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"path"
@@ -14,7 +15,8 @@ import (
 // filesystem this is an atomic rename; across filesystems the tree is
 // copied (reflinking where possible) and the source removed. Unless the
 // owner policy is OwnerKeep, the moved tree is re-owned recursively.
-func (f *FS) Move(src, dst string, o MoveOptions) (res MoveResult, err error) {
+// Cancelling ctx during a cross-filesystem move leaves the source intact.
+func (f *FS) Move(ctx context.Context, src, dst string, o MoveOptions) (res MoveResult, err error) {
 	if o.Ownership, err = o.Ownership.validate(OwnerKeep); err != nil {
 		return res, err
 	}
@@ -43,7 +45,7 @@ func (f *FS) Move(src, dst string, o MoveOptions) (res MoveResult, err error) {
 	}
 	err = unix.Renameat2(spfd, sname, dpfd, dname, flags)
 	if err == unix.EXDEV {
-		return f.moveAcross(src, dst, o, spfd, sname)
+		return f.moveAcross(ctx, src, dst, o, spfd, sname)
 	}
 	if err != nil {
 		return res, &fs.PathError{Op: "move", Path: src, Err: err}
@@ -55,23 +57,40 @@ func (f *FS) Move(src, dst string, o MoveOptions) (res MoveResult, err error) {
 			return res, &fs.PathError{Op: "open", Path: dst, Err: err}
 		}
 		defer unix.Close(fd)
-		err = walk(fd, dst, true, func(fd int, p string, _ *unix.Stat_t) error {
+		err = walk(ctx, fd, dst, true, func(fd int, p string, _ *unix.Stat_t) error {
+			o.Progress.setCurrent(p)
 			if err := unix.Fchownat(fd, "", uid, gid, unix.AT_EMPTY_PATH); err != nil {
 				return &fs.PathError{Op: "chown", Path: p, Err: err}
 			}
+			o.Progress.entryDone()
 			return nil
 		})
 	}
 	return res, err
 }
 
-func (f *FS) moveAcross(src, dst string, o MoveOptions, spfd int, sname string) (MoveResult, error) {
-	cr, err := f.Copy(src, dst, CopyOptions{Ownership: o.Ownership, Reflink: ReflinkAuto, Overwrite: o.Overwrite})
-	res := MoveResult{Copied: true, Copy: &cr}
+func (f *FS) moveAcross(ctx context.Context, src, dst string, o MoveOptions, spfd int, sname string) (MoveResult, error) {
+	res := MoveResult{Copied: true}
+	if o.Progress != nil {
+		entries, bytes, err := f.Usage(ctx, src)
+		if err != nil {
+			return res, err
+		}
+		o.Progress.AddTotal(entries, bytes)
+	}
+	cr, err := f.Copy(ctx, src, dst, CopyOptions{
+		Ownership: o.Ownership,
+		Reflink:   ReflinkAuto,
+		Overwrite: o.Overwrite,
+		Progress:  o.Progress,
+	})
+	res.Copy = &cr
 	if err != nil {
 		return res, err
 	}
-	return res, removeAt(spfd, sname, src)
+	// The copy is complete; finish removing the source even if cancelled
+	// now, rather than leaving both trees half there.
+	return res, removeAt(context.Background(), nil, spfd, sname, src)
 }
 
 // Rename gives p a new name within the same directory.
@@ -80,12 +99,13 @@ func (f *FS) Rename(p, name string) error {
 		return err
 	}
 	p = CleanPath(p)
-	_, err := f.Move(p, path.Join(path.Dir(p), name), MoveOptions{})
+	_, err := f.Move(context.Background(), p, path.Join(path.Dir(p), name), MoveOptions{})
 	return err
 }
 
-// Delete recursively removes p. Symlinks are removed, never followed.
-func (f *FS) Delete(p string) error {
+// Delete recursively removes p. Symlinks are removed, never followed. A
+// cancelled delete stops part-way; what was removed stays removed.
+func (f *FS) Delete(ctx context.Context, p string, o DeleteOptions) error {
 	p = CleanPath(p)
 	dpfd, name, err := f.openParent(p)
 	if err != nil {
@@ -96,7 +116,7 @@ func (f *FS) Delete(p string) error {
 	if err := unix.Fstatat(dpfd, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return &fs.PathError{Op: "remove", Path: p, Err: err}
 	}
-	return removeAt(dpfd, name, p)
+	return removeAt(ctx, o.Progress, dpfd, name, p)
 }
 
 // Mkdir creates the directory p.

@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/alanaktion/xwebfm/internal/fsops"
+	"github.com/alanaktion/xwebfm/internal/jobs"
 )
 
 func newTestServer(t *testing.T) (*httptest.Server, string) {
@@ -26,9 +27,15 @@ func newTestServer(t *testing.T) (*httptest.Server, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { f.Close() })
-	s := &Server{FS: f, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := jobs.New(1, log)
+	m.Start()
+	s := &Server{FS: f, Jobs: m, Log: log}
 	ts := httptest.NewServer(s.Handler())
-	t.Cleanup(ts.Close)
+	t.Cleanup(func() {
+		m.Stop() // ends WebSocket handlers before the server waits for them
+		ts.Close()
+	})
 	return ts, dir
 }
 

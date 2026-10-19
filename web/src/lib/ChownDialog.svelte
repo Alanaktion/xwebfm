@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { api, type Account, type Entry } from './api'
+  import { api, type Account, type Entry, type Job } from './api'
   import Modal from './Modal.svelte'
 
   let {
@@ -9,12 +9,14 @@
     groups,
     onclose,
     ondone,
+    onqueued,
   }: {
     entries: Entry[]
     users: Account[]
     groups: Account[]
     onclose: () => void
     ondone: (msg: string, error?: boolean) => void
+    onqueued: (job: Job) => void
   } = $props()
 
   let label = $derived(entries.length === 1 ? entries[0].name : `${entries.length} items`)
@@ -45,6 +47,17 @@
       return
     }
     busy = true
+    // Recursive changes can take a while, so they run as a background job.
+    if (recursive && entries.some((e) => e.type === 'dir')) {
+      try {
+        onqueued(await api.jobs.submit({ kind: 'chown', paths: entries.map((e) => e.path), uid, gid, recursive }))
+      } catch (e) {
+        error = (e as Error).message
+      } finally {
+        busy = false
+      }
+      return
+    }
     const failures: string[] = []
     for (const e of entries) {
       try {

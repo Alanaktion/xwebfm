@@ -5,6 +5,7 @@ package fsops
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -117,8 +118,8 @@ func (f *FS) WriteFile(dir, name string, r io.Reader, o WriteOptions) (e Entry, 
 
 // WriteTar writes p (a file or directory tree) to w as a gzipped tar
 // archive. Symlinks are stored as links; FIFOs, devices and sockets are
-// skipped.
-func (f *FS) WriteTar(p string, w io.Writer) error {
+// skipped. The archive is abandoned if ctx is cancelled.
+func (f *FS) WriteTar(ctx context.Context, p string, w io.Writer) error {
 	p = CleanPath(p)
 	fd, err := f.open(p, unix.O_PATH|unix.O_NOFOLLOW)
 	if err != nil {
@@ -131,7 +132,7 @@ func (f *FS) WriteTar(p string, w io.Writer) error {
 	if p == "/" {
 		base = "root"
 	}
-	err = walk(fd, p, true, func(fd int, fp string, st *unix.Stat_t) error {
+	err = walk(ctx, fd, p, true, func(fd int, fp string, st *unix.Stat_t) error {
 		name := base
 		if fp != p {
 			name = path.Join(base, fp[len(p):])

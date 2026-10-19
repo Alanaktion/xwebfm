@@ -1,12 +1,9 @@
 <script lang="ts">
-  import { api, type Entry } from './api'
+  import { api, type Entry, type Job } from './api'
   import Modal from './Modal.svelte'
 
-  let {
-    entries,
-    onclose,
-    ondone,
-  }: { entries: Entry[]; onclose: () => void; ondone: (msg: string, error?: boolean) => void } = $props()
+  let { entries, onclose, onqueued }: { entries: Entry[]; onclose: () => void; onqueued: (job: Job) => void } =
+    $props()
 
   let busy = $state(false)
   let error = $state('')
@@ -15,21 +12,13 @@
   async function submit() {
     busy = true
     error = ''
-    const failures: string[] = []
-    for (const e of entries) {
-      try {
-        await api.remove(e.path)
-      } catch (err) {
-        failures.push(`${e.name}: ${(err as Error).message}`)
-      }
+    try {
+      onqueued(await api.jobs.submit({ kind: 'delete', paths: entries.map((e) => e.path) }))
+    } catch (err) {
+      error = (err as Error).message
+    } finally {
+      busy = false
     }
-    busy = false
-    if (failures.length) {
-      error = failures.join('\n')
-      if (failures.length < entries.length) ondone(`Deleted ${entries.length - failures.length} of ${entries.length}`, true)
-      return
-    }
-    ondone(`Deleted ${entries.length === 1 ? entries[0].name : `${entries.length} items`}`)
   }
 </script>
 

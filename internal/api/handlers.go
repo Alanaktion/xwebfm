@@ -97,10 +97,11 @@ func (s *Server) handleChown(w http.ResponseWriter, r *http.Request) {
 		s.writeFSError(w, r, err)
 		return
 	}
-	if err := s.FS.Chown(req.Path, fsops.ChownOptions{UID: uid, GID: gid, Recursive: req.Recursive}); err != nil {
+	if err := s.FS.Chown(r.Context(), req.Path, fsops.ChownOptions{UID: uid, GID: gid, Recursive: req.Recursive}); err != nil {
 		s.writeFSError(w, r, err)
 		return
 	}
+	s.notify(req.Path, true)
 	s.respondStat(w, r, req.Path)
 }
 
@@ -120,10 +121,11 @@ func (s *Server) handleChmod(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid", fmt.Sprintf("invalid octal mode %q", req.Mode))
 		return
 	}
-	if err := s.FS.Chmod(req.Path, fsops.ChmodOptions{Mode: uint32(mode), Recursive: req.Recursive}); err != nil {
+	if err := s.FS.Chmod(r.Context(), req.Path, fsops.ChmodOptions{Mode: uint32(mode), Recursive: req.Recursive}); err != nil {
 		s.writeFSError(w, r, err)
 		return
 	}
+	s.notify(req.Path, true)
 	s.respondStat(w, r, req.Path)
 }
 
@@ -150,7 +152,7 @@ func (s *Server) handleCopy(w http.ResponseWriter, r *http.Request) {
 		s.writeFSError(w, r, err)
 		return
 	}
-	res, err := s.FS.Copy(req.Src, req.Dst, fsops.CopyOptions{
+	res, err := s.FS.Copy(r.Context(), req.Src, req.Dst, fsops.CopyOptions{
 		Ownership: own,
 		Reflink:   req.Reflink,
 		Overwrite: req.Overwrite,
@@ -159,6 +161,7 @@ func (s *Server) handleCopy(w http.ResponseWriter, r *http.Request) {
 		s.writeFSError(w, r, err)
 		return
 	}
+	s.notify(req.Dst, false)
 	e, err := s.FS.Stat(req.Dst)
 	if err != nil {
 		s.writeFSError(w, r, err)
@@ -189,11 +192,13 @@ func (s *Server) handleMove(w http.ResponseWriter, r *http.Request) {
 		s.writeFSError(w, r, err)
 		return
 	}
-	res, err := s.FS.Move(req.Src, req.Dst, fsops.MoveOptions{Ownership: own, Overwrite: req.Overwrite})
+	res, err := s.FS.Move(r.Context(), req.Src, req.Dst, fsops.MoveOptions{Ownership: own, Overwrite: req.Overwrite})
 	if err != nil {
 		s.writeFSError(w, r, err)
 		return
 	}
+	s.notify(req.Src, false)
+	s.notify(req.Dst, false)
 	e, err := s.FS.Stat(req.Dst)
 	if err != nil {
 		s.writeFSError(w, r, err)
@@ -216,6 +221,7 @@ func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
 		s.writeFSError(w, r, err)
 		return
 	}
+	s.notify(req.Path, false)
 	s.respondStat(w, r, path.Join(path.Dir(fsops.CleanPath(req.Path)), req.Name))
 }
 
@@ -228,10 +234,11 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := s.FS.Delete(req.Path); err != nil {
+	if err := s.FS.Delete(r.Context(), req.Path, fsops.DeleteOptions{}); err != nil {
 		s.writeFSError(w, r, err)
 		return
 	}
+	s.notify(req.Path, false)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -263,6 +270,7 @@ func (s *Server) handleMkdir(w http.ResponseWriter, r *http.Request) {
 		s.writeFSError(w, r, err)
 		return
 	}
+	s.notify(req.Path, false)
 	s.respondStat(w, r, req.Path)
 }
 
@@ -305,6 +313,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		entries = append(entries, e)
 	}
+	s.notify(fsops.CleanPath(q.Get("dir")), true)
 	writeJSON(w, http.StatusOK, entries)
 }
 
@@ -324,7 +333,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	if e.Type == fsops.TypeDir {
 		w.Header().Set("Content-Type", "application/gzip")
 		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name + ".tar.gz"}))
-		if err := s.FS.WriteTar(p, w); err != nil {
+		if err := s.FS.WriteTar(r.Context(), p, w); err != nil {
 			// Headers are already sent; all we can do is abort the stream.
 			s.Log.Error("tar download failed", "path", p, "err", err)
 			panic(http.ErrAbortHandler)
@@ -347,6 +356,20 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.FS.Owners.Groups())
+}
+
+// notify tells WebSocket clients that p's parent directory changed (and p
+// itself, if self is set, e.g. after chmod of a directory's contents).
+func (s *Server) notify(p string, self bool) {
+	if s.Jobs == nil {
+		return
+	}
+	p = fsops.CleanPath(p)
+	if self {
+		s.Jobs.Notify(path.Dir(p), p)
+	} else {
+		s.Jobs.Notify(path.Dir(p))
+	}
 }
 
 // respondStat replies with the updated entry after a modifying operation.

@@ -6,16 +6,20 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"golang.org/x/sys/unix"
 )
+
+var ctx = context.Background()
 
 func newTestFS(t *testing.T) (*FS, string) {
 	t.Helper()
@@ -112,7 +116,7 @@ func TestChmod(t *testing.T) {
 	must(t, os.WriteFile(filepath.Join(dir, "d/e/f"), nil, 0o644))
 	must(t, os.Symlink("e/f", filepath.Join(dir, "d/link")))
 
-	must(t, f.Chmod("/d", ChmodOptions{Mode: 0o750, Recursive: true}))
+	must(t, f.Chmod(ctx, "/d", ChmodOptions{Mode: 0o750, Recursive: true}))
 	for _, p := range []string{"d", "d/e", "d/e/f"} {
 		st, err := os.Lstat(filepath.Join(dir, p))
 		must(t, err)
@@ -120,10 +124,10 @@ func TestChmod(t *testing.T) {
 			t.Errorf("%s mode = %v", p, st.Mode())
 		}
 	}
-	if err := f.Chmod("/d/link", ChmodOptions{Mode: 0o600}); !errors.Is(err, ErrIsSymlink) {
+	if err := f.Chmod(ctx, "/d/link", ChmodOptions{Mode: 0o600}); !errors.Is(err, ErrIsSymlink) {
 		t.Errorf("chmod symlink: %v", err)
 	}
-	if err := f.Chmod("/d", ChmodOptions{Mode: 0o10000}); !errors.Is(err, ErrInvalidArgument) {
+	if err := f.Chmod(ctx, "/d", ChmodOptions{Mode: 0o10000}); !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("chmod bad mode: %v", err)
 	}
 }
@@ -139,7 +143,7 @@ func TestChown(t *testing.T) {
 	must(t, os.WriteFile(target, nil, 0o644))
 	must(t, os.Symlink(target, filepath.Join(dir, "d/link")))
 
-	must(t, f.Chown("/d", ChownOptions{UID: 1000, GID: 50, Recursive: true}))
+	must(t, f.Chown(ctx, "/d", ChownOptions{UID: 1000, GID: 50, Recursive: true}))
 	for _, p := range []string{"d", "d/e", "d/e/f", "d/link"} {
 		e, err := f.Stat(p)
 		must(t, err)
@@ -151,7 +155,7 @@ func TestChown(t *testing.T) {
 	if e, _ := f.Stat("/target"); e.UID != 0 {
 		t.Errorf("chown followed symlink: %+v", e)
 	}
-	must(t, f.Chown("/d/e/f", ChownOptions{UID: -1, GID: 0}))
+	must(t, f.Chown(ctx, "/d/e/f", ChownOptions{UID: -1, GID: 0}))
 	if e, _ := f.Stat("/d/e/f"); e.UID != 1000 || e.GID != 0 {
 		t.Errorf("gid-only chown: %+v", e)
 	}
@@ -161,7 +165,7 @@ func TestCopyFile(t *testing.T) {
 	f, dir := newTestFS(t)
 	must(t, os.WriteFile(filepath.Join(dir, "src"), []byte("data"), 0o640))
 
-	res, err := f.Copy("/src", "/dst", CopyOptions{Reflink: ReflinkNever})
+	res, err := f.Copy(ctx, "/src", "/dst", CopyOptions{Reflink: ReflinkNever})
 	must(t, err)
 	if res.Reflinked != 0 || res.Files != 1 || res.Bytes != 4 {
 		t.Errorf("result: %+v", res)
@@ -175,27 +179,27 @@ func TestCopyFile(t *testing.T) {
 		t.Errorf("dst mode %v", st.Mode())
 	}
 
-	if _, err := f.Copy("/src", "/dst", CopyOptions{}); !errors.Is(err, fs.ErrExist) {
+	if _, err := f.Copy(ctx, "/src", "/dst", CopyOptions{}); !errors.Is(err, fs.ErrExist) {
 		t.Errorf("copy without overwrite: %v", err)
 	}
-	if _, err := f.Copy("/dst", "/dst", CopyOptions{Overwrite: true}); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := f.Copy(ctx, "/dst", "/dst", CopyOptions{Overwrite: true}); !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("copy onto itself: %v", err)
 	}
 
 	// Overwrite must replace the file, not write through a hard link to it.
 	must(t, os.Link(filepath.Join(dir, "dst"), filepath.Join(dir, "hardlink")))
 	must(t, os.WriteFile(filepath.Join(dir, "src"), []byte("new"), 0o640))
-	_, err = f.Copy("/src", "/dst", CopyOptions{Overwrite: true})
+	_, err = f.Copy(ctx, "/src", "/dst", CopyOptions{Overwrite: true})
 	must(t, err)
 	if got, _ := os.ReadFile(filepath.Join(dir, "hardlink")); string(got) != "data" {
 		t.Errorf("overwrite wrote through hard link: %q", got)
 	}
 
 	// Auto always succeeds; Always either reflinks or reports unsupported.
-	res, err = f.Copy("/src", "/auto", CopyOptions{Reflink: ReflinkAuto})
+	res, err = f.Copy(ctx, "/src", "/auto", CopyOptions{Reflink: ReflinkAuto})
 	must(t, err)
 	t.Logf("auto reflinked=%d", res.Reflinked)
-	res, err = f.Copy("/src", "/always", CopyOptions{Reflink: ReflinkAlways})
+	res, err = f.Copy(ctx, "/src", "/always", CopyOptions{Reflink: ReflinkAlways})
 	switch {
 	case err == nil && res.Reflinked != 1:
 		t.Error("ReflinkAlways succeeded without reflinking")
@@ -222,7 +226,7 @@ func TestCopyTree(t *testing.T) {
 	f, dir := newTestFS(t)
 	makeTree(t, filepath.Join(dir, "src"))
 
-	res, err := f.Copy("/src", "/dst", CopyOptions{})
+	res, err := f.Copy(ctx, "/src", "/dst", CopyOptions{})
 	must(t, err)
 	if res.Files != 4 || res.Dirs != 3 || res.Bytes != 5 {
 		t.Errorf("result: %+v", res)
@@ -241,12 +245,12 @@ func TestCopyTree(t *testing.T) {
 		t.Errorf("setuid lost: %v", st.Mode())
 	}
 
-	if _, err := f.Copy("/src", "/src/sub/inside", CopyOptions{}); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := f.Copy(ctx, "/src", "/src/sub/inside", CopyOptions{}); !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("copy into itself: %v", err)
 	}
 	// Overwrite merges into the existing tree.
 	must(t, os.WriteFile(filepath.Join(dir, "dst/extra"), nil, 0o644))
-	_, err = f.Copy("/src", "/dst", CopyOptions{Overwrite: true})
+	_, err = f.Copy(ctx, "/src", "/dst", CopyOptions{Overwrite: true})
 	must(t, err)
 	if _, err := os.Lstat(filepath.Join(dir, "dst/extra")); err != nil {
 		t.Errorf("merge removed extra file: %v", err)
@@ -264,9 +268,9 @@ func TestCopyTreeInheritOwner(t *testing.T) {
 	must(t, os.MkdirAll(filepath.Join(dir, "home/bob"), 0o755))
 	must(t, os.Chown(filepath.Join(dir, "home/bob"), 1001, 1001))
 	makeTree(t, filepath.Join(dir, "home/alice/project"))
-	must(t, f.Chown("/home/alice/project", ChownOptions{UID: 1000, GID: 1000, Recursive: true}))
+	must(t, f.Chown(ctx, "/home/alice/project", ChownOptions{UID: 1000, GID: 1000, Recursive: true}))
 
-	_, err := f.Copy("/home/alice/project", "/home/bob/project", CopyOptions{Ownership: Ownership{Owner: OwnerInherit}})
+	_, err := f.Copy(ctx, "/home/alice/project", "/home/bob/project", CopyOptions{Ownership: Ownership{Owner: OwnerInherit}})
 	must(t, err)
 	for _, p := range []string{"project", "project/a.txt", "project/sub", "project/sub/link", "project/sub/deeper/b.bin"} {
 		e, err := f.Stat("/home/bob/" + p)
@@ -284,7 +288,7 @@ func TestCopyTreeInheritOwner(t *testing.T) {
 		t.Errorf("source re-owned: %+v", e)
 	}
 
-	_, err = f.Copy("/home/alice/project/a.txt", "/home/bob/set.txt",
+	_, err = f.Copy(ctx, "/home/alice/project/a.txt", "/home/bob/set.txt",
 		CopyOptions{Ownership: Ownership{Owner: OwnerSet, UID: 1234, GID: -1}})
 	must(t, err)
 	if e, _ := f.Stat("/home/bob/set.txt"); e.UID != 1234 || e.GID != 1000 {
@@ -302,9 +306,9 @@ func TestMoveInheritOwner(t *testing.T) {
 	must(t, os.MkdirAll(filepath.Join(dir, "home/bob"), 0o755))
 	must(t, os.Chown(filepath.Join(dir, "home/bob"), 1001, 1001))
 	makeTree(t, filepath.Join(dir, "home/alice/project"))
-	must(t, f.Chown("/home/alice/project", ChownOptions{UID: 1000, GID: 1000, Recursive: true}))
+	must(t, f.Chown(ctx, "/home/alice/project", ChownOptions{UID: 1000, GID: 1000, Recursive: true}))
 
-	res, err := f.Move("/home/alice/project", "/home/bob/project", MoveOptions{Ownership: Ownership{Owner: OwnerInherit}})
+	res, err := f.Move(ctx, "/home/alice/project", "/home/bob/project", MoveOptions{Ownership: Ownership{Owner: OwnerInherit}})
 	must(t, err)
 	if res.Copied {
 		t.Error("same-filesystem move fell back to copying")
@@ -326,13 +330,13 @@ func TestMoveRenameDelete(t *testing.T) {
 	makeTree(t, filepath.Join(dir, "src"))
 	must(t, os.WriteFile(filepath.Join(dir, "other"), nil, 0o644))
 
-	if _, err := f.Move("/src", "/src/sub/x", MoveOptions{}); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := f.Move(ctx, "/src", "/src/sub/x", MoveOptions{}); !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("move into itself: %v", err)
 	}
-	if _, err := f.Move("/other", "/src/a.txt", MoveOptions{}); !errors.Is(err, fs.ErrExist) {
+	if _, err := f.Move(ctx, "/other", "/src/a.txt", MoveOptions{}); !errors.Is(err, fs.ErrExist) {
 		t.Errorf("move onto existing: %v", err)
 	}
-	_, err := f.Move("/other", "/src/a.txt", MoveOptions{Overwrite: true})
+	_, err := f.Move(ctx, "/other", "/src/a.txt", MoveOptions{Overwrite: true})
 	must(t, err)
 
 	must(t, f.Rename("/src", "renamed"))
@@ -347,14 +351,14 @@ func TestMoveRenameDelete(t *testing.T) {
 	outside := filepath.Join(dir, "keep")
 	must(t, os.WriteFile(outside, nil, 0o644))
 	must(t, os.Symlink("/keep", filepath.Join(dir, "renamed/sub/abs")))
-	must(t, f.Delete("/renamed"))
+	must(t, f.Delete(ctx, "/renamed", DeleteOptions{}))
 	if _, err := os.Lstat(filepath.Join(dir, "renamed")); !os.IsNotExist(err) {
 		t.Errorf("delete: %v", err)
 	}
 	if _, err := os.Lstat(outside); err != nil {
 		t.Errorf("delete followed symlink: %v", err)
 	}
-	if err := f.Delete("/"); !errors.Is(err, ErrInvalidArgument) {
+	if err := f.Delete(ctx, "/", DeleteOptions{}); !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("delete root: %v", err)
 	}
 }
@@ -401,7 +405,7 @@ func TestWriteTar(t *testing.T) {
 	f, dir := newTestFS(t)
 	makeTree(t, filepath.Join(dir, "src"))
 	var buf bytes.Buffer
-	must(t, f.WriteTar("/src", &buf))
+	must(t, f.WriteTar(ctx, "/src", &buf))
 	gz, err := gzip.NewReader(&buf)
 	must(t, err)
 	tr := tar.NewReader(gz)
@@ -438,7 +442,7 @@ func TestMoveAcrossFilesystems(t *testing.T) {
 	t.Cleanup(func() { unix.Unmount(mnt, unix.MNT_DETACH) })
 	makeTree(t, filepath.Join(dir, "src"))
 
-	res, err := f.Move("/src", "/mnt/src", MoveOptions{})
+	res, err := f.Move(ctx, "/src", "/mnt/src", MoveOptions{})
 	must(t, err)
 	if !res.Copied || res.Copy == nil || res.Copy.Files != 4 {
 		t.Errorf("result: %+v %+v", res, res.Copy)
@@ -448,5 +452,84 @@ func TestMoveAcrossFilesystems(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(filepath.Join(mnt, "src/a.txt")); string(got) != "aaa" {
 		t.Errorf("moved contents %q", got)
+	}
+}
+
+func TestCopyProgressAndUsage(t *testing.T) {
+	f, dir := newTestFS(t)
+	makeTree(t, filepath.Join(dir, "src"))
+	big := bytes.Repeat([]byte("x"), copyChunk*2+123)
+	must(t, os.WriteFile(filepath.Join(dir, "src/big"), big, 0o644))
+
+	entries, size, err := f.Usage(ctx, "/src")
+	must(t, err)
+	// src, a.txt, sub, sub/link, sub/deeper, b.bin, fifo, big
+	if entries != 8 || size != int64(len(big))+5 {
+		t.Errorf("usage: %d entries, %d bytes", entries, size)
+	}
+
+	var prog Progress
+	prog.AddTotal(entries, size)
+	_, err = f.Copy(ctx, "/src", "/dst", CopyOptions{Reflink: ReflinkNever, Progress: &prog})
+	must(t, err)
+	got := prog.Snapshot()
+	if got.Entries != entries || got.Bytes != size || got.TotalBytes != size {
+		t.Errorf("progress %+v, want %d entries / %d bytes", got, entries, size)
+	}
+}
+
+func TestCancel(t *testing.T) {
+	f, dir := newTestFS(t)
+	makeTree(t, filepath.Join(dir, "src"))
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+
+	if _, err := f.Copy(cancelled, "/src", "/dst", CopyOptions{}); !errors.Is(err, context.Canceled) {
+		t.Errorf("copy: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "dst")); !os.IsNotExist(err) {
+		t.Errorf("cancelled copy left destination: %v", err)
+	}
+	if err := f.Delete(cancelled, "/src", DeleteOptions{}); !errors.Is(err, context.Canceled) {
+		t.Errorf("delete: %v", err)
+	}
+	if err := f.Chmod(cancelled, "/src", ChmodOptions{Mode: 0o700, Recursive: true}); !errors.Is(err, context.Canceled) {
+		t.Errorf("chmod: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "src/a.txt")); err != nil {
+		t.Errorf("source damaged: %v", err)
+	}
+}
+
+// cancelAfter reports cancellation once Err has been checked n times.
+type cancelAfter struct {
+	context.Context
+	n atomic.Int32
+}
+
+func (c *cancelAfter) Err() error {
+	if c.n.Add(-1) < 0 {
+		return context.Canceled
+	}
+	return nil
+}
+
+// Cancelling while a large file is mid-copy stops between chunks.
+func TestCancelMidFile(t *testing.T) {
+	f, dir := newTestFS(t)
+	must(t, os.WriteFile(filepath.Join(dir, "big"), bytes.Repeat([]byte("y"), copyChunk*4), 0o644))
+	// One check before the file, one per chunk: cancel after the first chunk.
+	cctx := &cancelAfter{Context: ctx}
+	cctx.n.Store(2)
+	prog := &Progress{}
+	_, err := f.Copy(cctx, "/big", "/copy", CopyOptions{Reflink: ReflinkNever, Progress: prog})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("copy: %v", err)
+	}
+	if got := prog.Snapshot().Bytes; got != copyChunk {
+		t.Errorf("copied %d bytes before cancelling, want %d", got, copyChunk)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "copy")); !os.IsNotExist(err) {
+		t.Errorf("partial file left behind: %v", err)
 	}
 }

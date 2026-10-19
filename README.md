@@ -27,6 +27,10 @@ reflink copies.
   renames within a filesystem and fall back to copy + delete across them
 - Rename, new folder, delete, upload, and download (folders as `.tar.gz`)
 - `chown` and `chmod`, optionally recursive
+- A background job queue for copy, move, delete and recursive chown/chmod,
+  with live progress (bytes, items, speed, time left) and cancel, pushed to
+  the browser over a WebSocket. Panes refresh automatically when a job or
+  another browser tab changes a directory they show
 
 When ownership changes on copy, setuid/setgid bits are cleared from regular
 files so a copy never becomes a setuid binary for its new owner.
@@ -42,13 +46,25 @@ files so a copy never becomes a setuid binary for its new owner.
 | Ctrl+A / Esc | Select all / clear selection |
 | F2 F3 F5 F6 F7 F8 | Rename, download, copy, move, new folder, delete |
 
+## Jobs
+
+Long operations run as jobs: `-jobs N` (default 2) run at once and the rest
+wait in a FIFO queue. Jobs live in memory only, so a restart drops queued
+jobs and history (the last 100 finished jobs are kept).
+
+Cancelling a copy removes the partially created destination. Cancelling a
+move between filesystems leaves the source intact (a same-filesystem move is
+an atomic rename and finishes instantly). A cancelled delete or chown/chmod
+stops part-way, and changes already made remain.
+
 ## Layout
 
 | Path | Purpose |
 | --- | --- |
 | `cmd/xwebfm` | Entry point: flags, HTTP server, graceful shutdown |
 | `internal/fsops` | Filesystem operations, independent of HTTP |
-| `internal/api` | JSON API over `fsops` |
+| `internal/jobs` | In-memory job queue, workers, progress and event fan-out |
+| `internal/api` | JSON API and WebSocket over `fsops` and `jobs` |
 | `web/` | Svelte 5 + TypeScript SPA (Vite); `web/dist` is embedded into the binary |
 
 ## Path safety
@@ -66,8 +82,13 @@ Requires Go 1.24+ and Node 22+.
 
 ```sh
 make build        # builds web/dist, then the ./xwebfm binary
-sudo ./xwebfm -listen 127.0.0.1:8080 -root /
+sudo ./xwebfm -listen 127.0.0.1:8080 -root / -jobs 2
 ```
+
+The WebSocket only accepts same-origin connections (Origin must match the
+Host header). If your reverse proxy rewrites `Host`, either forward it
+(e.g. nginx `proxy_set_header Host $host;`, plus the usual `Upgrade` and
+`Connection` headers) or allow the public host with `-origin files.example.com`.
 
 For development, `make dev` runs the Go server on `:8080` and the Vite dev
 server (which proxies `/api`) together. `make test` and `make lint` run the
@@ -95,4 +116,27 @@ header). `dst` is always the full destination path. "owner…" means
 | POST | `/api/v1/fs/delete` | `{"path"}` (recursive) |
 | POST | `/api/v1/fs/upload` | multipart; `?dir=&overwrite=&owner=` (owner defaults to `inherit`) |
 | GET | `/api/v1/users`, `/api/v1/groups` | |
+| POST | `/api/v1/jobs` | `{"kind": "copy\|move", "items": [{"src", "dst"}], …}` or `{"kind": "delete\|chown\|chmod", "paths": [...], …}` with the same options as the synchronous endpoints → 202 + job |
+| GET | `/api/v1/jobs` | all jobs |
+| POST | `/api/v1/jobs/{id}/cancel`, `/api/v1/jobs/{id}/dismiss`, `/api/v1/jobs/clear` | |
+| GET | `/api/v1/ws` | WebSocket event stream (see below) |
 | GET | `/healthz` | |
+
+The synchronous `/api/v1/fs/*` endpoints remain for scripting; closing the
+connection cancels them.
+
+### WebSocket events
+
+`/api/v1/ws` sends `{"type": "snapshot", "jobs": [...]}` first, then:
+
+- `{"type": "job", "job": {...}}` when a job is queued, starts, finishes, or
+  its progress changes (at most every 250 ms)
+- `{"type": "removed", "id": "..."}` when a job is dismissed or pruned
+- `{"type": "changed", "dirs": [...]}` when directories changed (finished
+  jobs and synchronous operations)
+
+A job has `id, kind, title, state` (`queued`, `running`, `done`, `failed`,
+`cancelled`), `items`, timestamps, `progress {totalEntries, totalBytes,
+entries, bytes, current}`, `errors` and `dirs`. A client that falls too far
+behind is disconnected and should reconnect for a fresh snapshot.
+

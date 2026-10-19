@@ -1,6 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { api, ApiError, type Account, type Entry } from './lib/api'
+  import { api, ApiError, type Account, type Entry, type Job } from './lib/api'
+  import { humanSize } from './lib/format'
+  import { JobsStore } from './lib/jobs.svelte'
+  import JobsPanel from './lib/JobsPanel.svelte'
   import { PaneState } from './lib/pane.svelte'
   import Pane, { type DragPayload } from './lib/Pane.svelte'
   import ChownDialog from './lib/ChownDialog.svelte'
@@ -27,6 +30,23 @@
   let users = $state<Account[]>([])
   let groups = $state<Account[]>([])
   let uploadInput: HTMLInputElement
+  let jobsOpen = $state(false)
+
+  const jobs = new JobsStore({
+    onchanged: (dirs) => {
+      for (const p of panes) if (!dirs || dirs.includes(p.path)) p.load()
+    },
+    onfinished: (job) => {
+      const p = job.progress
+      const summary =
+        job.state === 'done'
+          ? `done${p.entries ? ` · ${p.entries} items` : ''}${p.bytes ? ` · ${humanSize(p.bytes)}` : ''}`
+          : job.state === 'failed'
+            ? `failed: ${job.errors?.[0] ?? 'unknown error'}${(job.errors?.length ?? 0) > 1 ? ` (+${job.errors!.length - 1} more)` : ''}`
+            : 'cancelled'
+      status = { text: `${job.title}: ${summary}`, error: job.state === 'failed' }
+    },
+  })
 
   let pane = $derived(panes[active])
   let other = $derived(panes[1 - active])
@@ -38,10 +58,18 @@
   })
 
   onMount(() => {
+    jobs.connect()
     panes.forEach((p) => p.load())
     api.users().then((u) => (users = u)).catch(() => {})
     api.groups().then((g) => (groups = g)).catch(() => {})
+    return () => jobs.close()
   })
+
+  function queued(job: Job) {
+    dialog = null
+    jobsOpen = true
+    status = { text: `Started: ${job.title}`, error: false }
+  }
 
   function done(text: string, error = false) {
     if (!error) dialog = null
@@ -170,6 +198,8 @@
     {/each}
   </div>
 
+  {#if jobsOpen}<JobsPanel store={jobs} onclose={() => (jobsOpen = false)} />{/if}
+
   <footer>
     <div class="status" class:error={status?.error} title={status?.text}>
       {#if status}{status.text}{:else}<span class="muted">Tab switches panes · Space/Insert selects · drag to copy or move (Ctrl copies, Shift moves)</span>{/if}
@@ -184,6 +214,12 @@
       <button onclick={actions.chown} disabled={!targets.length}>Owner</button>
       <button onclick={actions.chmod} disabled={!targets.some((t) => t.type !== 'symlink')}>Mode</button>
       <button onclick={actions.upload}>Upload</button>
+      <span class="spacer"></span>
+      <button class="jobs-toggle" class:on={jobsOpen} onclick={() => (jobsOpen = !jobsOpen)} aria-expanded={jobsOpen}>
+        Jobs
+        {#if jobs.active}<span class="count">{jobs.active}</span>{/if}
+        {#if !jobs.connected}<span class="offline" title="Live updates disconnected; reconnecting">●</span>{/if}
+      </button>
     </div>
   </footer>
 </div>
@@ -201,17 +237,24 @@
 />
 
 {#if dialog?.kind === 'transfer'}
-  <TransferDialog {...dialog} {users} {groups} onclose={() => (dialog = null)} ondone={done} />
+  <TransferDialog {...dialog} {users} {groups} onclose={() => (dialog = null)} onqueued={queued} />
 {:else if dialog?.kind === 'rename'}
   <RenameDialog entry={dialog.entry} onclose={() => (dialog = null)} ondone={done} />
 {:else if dialog?.kind === 'mkdir'}
   <MkdirDialog dir={dialog.dir} {users} {groups} onclose={() => (dialog = null)} ondone={done} />
 {:else if dialog?.kind === 'delete'}
-  <DeleteDialog entries={dialog.entries} onclose={() => (dialog = null)} ondone={done} />
+  <DeleteDialog entries={dialog.entries} onclose={() => (dialog = null)} onqueued={queued} />
 {:else if dialog?.kind === 'chown'}
-  <ChownDialog entries={dialog.entries} {users} {groups} onclose={() => (dialog = null)} ondone={done} />
+  <ChownDialog
+    entries={dialog.entries}
+    {users}
+    {groups}
+    onclose={() => (dialog = null)}
+    ondone={done}
+    onqueued={queued}
+  />
 {:else if dialog?.kind === 'chmod'}
-  <ChmodDialog entries={dialog.entries} onclose={() => (dialog = null)} ondone={done} />
+  <ChmodDialog entries={dialog.entries} onclose={() => (dialog = null)} ondone={done} onqueued={queued} />
 {/if}
 
 <style>
@@ -234,4 +277,16 @@
   .keys { display: flex; flex-wrap: wrap; gap: 4px; }
   .keys button { display: inline-flex; gap: 4px; align-items: center; padding: 3px 8px; }
   kbd { font: 11px ui-monospace, monospace; color: var(--muted); }
+  .spacer { flex: 1; }
+  .jobs-toggle.on { border-color: var(--accent); }
+  .count {
+    background: var(--accent);
+    color: #fff;
+    border-radius: 9px;
+    padding: 0 6px;
+    font-size: 11px;
+    min-width: 18px;
+    text-align: center;
+  }
+  .offline { color: var(--danger); font-size: 10px; }
 </style>

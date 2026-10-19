@@ -65,6 +65,7 @@ type ChownOptions struct {
 	UID       int
 	GID       int
 	Recursive bool
+	Progress  *Progress
 }
 
 // ChmodOptions controls Chmod. Symlinks are skipped during recursive walks
@@ -72,6 +73,7 @@ type ChownOptions struct {
 type ChmodOptions struct {
 	Mode      uint32
 	Recursive bool
+	Progress  *Progress
 }
 
 // ReflinkMode selects how Copy uses reflinks (FICLONE).
@@ -118,6 +120,7 @@ type CopyOptions struct {
 	// Overwrite replaces existing files (unlinking them first, so hard links
 	// elsewhere are untouched) and merges into existing directories.
 	Overwrite bool
+	Progress  *Progress
 }
 
 // CopyResult reports what Copy actually did.
@@ -134,6 +137,14 @@ type CopyResult struct {
 type MoveOptions struct {
 	Ownership
 	Overwrite bool
+	// Progress is updated when re-owning the moved tree, or by the copy when
+	// moving across filesystems (which also fills in its totals).
+	Progress *Progress
+}
+
+// DeleteOptions controls Delete.
+type DeleteOptions struct {
+	Progress *Progress
 }
 
 // MoveResult reports what Move did.

@@ -3,6 +3,7 @@
 package fsops
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -17,8 +18,9 @@ import (
 // Copy recursively copies src to dst (the full destination path, not its
 // parent directory). Directories, regular files, symlinks, FIFOs and device
 // nodes are copied; sockets are skipped. Regular files are reflinked when
-// o.Reflink allows and the filesystem supports it.
-func (f *FS) Copy(src, dst string, o CopyOptions) (res CopyResult, err error) {
+// o.Reflink allows and the filesystem supports it. If ctx is cancelled the
+// copy stops and a newly created destination is removed again.
+func (f *FS) Copy(ctx context.Context, src, dst string, o CopyOptions) (res CopyResult, err error) {
 	switch o.Reflink {
 	case "":
 		o.Reflink = ReflinkAuto
@@ -58,13 +60,14 @@ func (f *FS) Copy(src, dst string, o CopyOptions) (res CopyResult, err error) {
 		return res, fmt.Errorf("%w: source and destination are the same file", ErrInvalidArgument)
 	}
 
-	c := &copier{o: o}
+	c := &copier{ctx: ctx, o: o}
 	if c.uid, c.gid, err = ownerFor(o.Ownership, dpfd); err != nil {
 		return res, &fs.PathError{Op: "stat", Path: path.Dir(dst), Err: err}
 	}
 	err = c.copy(spfd, &st, dpfd, name, dst)
 	if err != nil && !exists {
-		removeAt(dpfd, name, dst) // don't leave a partial copy behind
+		// Don't leave a partial copy behind (even when cancelled).
+		removeAt(context.Background(), nil, dpfd, name, dst)
 	}
 	return c.res, err
 }
@@ -75,6 +78,7 @@ func isWithin(p, dir string) bool {
 }
 
 type copier struct {
+	ctx      context.Context
 	o        CopyOptions
 	uid, gid int // target owner; -1 keeps the source's
 	res      CopyResult
@@ -97,6 +101,10 @@ func (c *copier) owner(st *unix.Stat_t) (int, int) {
 
 // copy copies the file open as srcfd (O_PATH|O_NOFOLLOW) to name in dpfd.
 func (c *copier) copy(srcfd int, st *unix.Stat_t, dpfd int, name, p string) error {
+	if err := c.ctx.Err(); err != nil {
+		return err
+	}
+	c.o.Progress.setCurrent(p)
 	isDir := st.Mode&unix.S_IFMT == unix.S_IFDIR
 	if c.o.Overwrite {
 		// Replace existing non-directories by unlinking them, so writing never
@@ -127,6 +135,7 @@ func (c *copier) copy(srcfd int, st *unix.Stat_t, dpfd int, name, p string) erro
 	case unix.S_IFIFO, unix.S_IFCHR, unix.S_IFBLK:
 		return c.copyNode(st, dpfd, name, p)
 	}
+	c.o.Progress.entryDone()
 	c.res.Skipped++
 	return nil
 }
@@ -163,19 +172,41 @@ func (c *copier) copyFile(srcfd int, st *unix.Stat_t, dpfd int, name, p string) 
 		}
 	}
 	n := st.Size
-	if !reflinked {
-		if n, err = io.Copy(dstFile, srcFile); err != nil {
-			return &fs.PathError{Op: "copy", Path: p, Err: err}
-		}
-	} else {
+	if reflinked {
 		c.res.Reflinked++
+		c.o.Progress.addBytes(n)
+	} else if n, err = c.copyData(dstFile, srcFile, p); err != nil {
+		return err
 	}
 	if err := c.applyMeta(dfd, st, p); err != nil {
 		return err
 	}
+	c.o.Progress.entryDone()
 	c.res.Files++
 	c.res.Bytes += n
 	return nil
+}
+
+// copyChunk bounds each copy_file_range call so cancellation and progress
+// stay responsive on large files.
+const copyChunk = 8 << 20
+
+func (c *copier) copyData(dst, src *os.File, p string) (int64, error) {
+	var total int64
+	for {
+		if err := c.ctx.Err(); err != nil {
+			return total, err
+		}
+		n, err := io.CopyN(dst, src, copyChunk)
+		total += n
+		c.o.Progress.addBytes(n)
+		if err == io.EOF {
+			return total, nil
+		}
+		if err != nil {
+			return total, &fs.PathError{Op: "copy", Path: p, Err: err}
+		}
+	}
 }
 
 func (c *copier) copyDir(srcfd int, st *unix.Stat_t, dpfd int, name, p string) error {
@@ -227,6 +258,7 @@ func (c *copier) copyDir(srcfd int, st *unix.Stat_t, dpfd int, name, p string) e
 		}
 	}
 
+	c.o.Progress.entryDone()
 	if created {
 		// Applied last: the directory stays 0700 while being filled, and its
 		// mtime isn't disturbed by creating children.
@@ -255,6 +287,7 @@ func (c *copier) copySymlink(srcfd int, st *unix.Stat_t, dpfd int, name, p strin
 	if err := unix.UtimesNanoAt(dpfd, name, ts, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return &fs.PathError{Op: "utimes", Path: p, Err: err}
 	}
+	c.o.Progress.entryDone()
 	c.res.Files++
 	return nil
 }
@@ -271,6 +304,7 @@ func (c *copier) copyNode(st *unix.Stat_t, dpfd int, name, p string) error {
 	if err := c.applyMeta(fd, st, p); err != nil {
 		return err
 	}
+	c.o.Progress.entryDone()
 	c.res.Files++
 	return nil
 }

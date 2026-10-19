@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { api, ApiError, type Account, type Entry, type OwnerPolicy, type ReflinkMode } from './api'
-  import { humanSize, joinPath } from './format'
+  import { api, ApiError, type Account, type Entry, type Job, type OwnerPolicy, type ReflinkMode } from './api'
+  import { joinPath } from './format'
   import Modal from './Modal.svelte'
   import OwnerPicker, { ownerFields } from './OwnerPicker.svelte'
 
@@ -12,7 +12,7 @@
     users,
     groups,
     onclose,
-    ondone,
+    onqueued,
   }: {
     op: 'copy' | 'move'
     sources: Entry[]
@@ -20,7 +20,7 @@
     users: Account[]
     groups: Account[]
     onclose: () => void
-    ondone: (msg: string, error?: boolean) => void
+    onqueued: (job: Job) => void
   } = $props()
 
   let op = $state(untrack(() => initialOp))
@@ -32,7 +32,6 @@
   let overwrite = $state(false)
   let busy = $state(false)
   let error = $state('')
-  let progress = $state('')
   let destInfo = $state<Entry | null>(null)
   let policyTouched = false
 
@@ -40,15 +39,17 @@
   // someone else, default to handing the files over to them.
   $effect(() => {
     const d = dest
-    const timer = setTimeout(async () => {
-      destInfo = await api.stat(d).catch(() => null)
-      if (!policyTouched && destInfo?.type === 'dir') {
-        const foreign = sources.some((s) => s.uid !== destInfo!.uid || s.gid !== destInfo!.gid)
-        policy = foreign ? 'inherit' : 'keep'
-      }
-    }, 150)
+    const timer = setTimeout(async () => applyDest(await api.stat(d).catch(() => null)), 150)
     return () => clearTimeout(timer)
   })
+
+  function applyDest(info: Entry | null) {
+    destInfo = info
+    if (!policyTouched && info?.type === 'dir') {
+      const foreign = sources.some((s) => s.uid !== info.uid || s.gid !== info.gid)
+      policy = foreign ? 'inherit' : 'keep'
+    }
+  }
 
   let title = $derived(
     `${op === 'copy' ? 'Copy' : 'Move'} ${sources.length === 1 ? sources[0].name : `${sources.length} items`}`,
@@ -61,6 +62,9 @@
     // single source is copied/moved to that exact path.
     let target: (s: Entry) => string
     const info = await api.stat(dest).catch(() => null)
+    // Apply the ownership default now in case the debounced lookup above
+    // hasn't run yet (e.g. a quick Enter right after the dialog opens).
+    applyDest(info)
     if (info?.type === 'dir') {
       target = (s) => joinPath(info.path, s.name)
     } else if (sources.length === 1 && (!info || overwrite)) {
@@ -72,45 +76,21 @@
     }
 
     const owner = ownerFields(policy, user, group)
-    const failures: string[] = []
-    let files = 0,
-      reflinked = 0,
-      bytes = 0,
-      copied = false
-    for (const [i, s] of sources.entries()) {
-      progress = `${op === 'copy' ? 'Copying' : 'Moving'} ${i + 1}/${sources.length}: ${s.name}`
-      try {
-        if (op === 'copy') {
-          const r = await api.copy({ src: s.path, dst: target(s), reflink, overwrite, ...owner })
-          files += r.files
-          reflinked += r.reflinked
-          bytes += r.bytes
-        } else {
-          const r = await api.move({ src: s.path, dst: target(s), overwrite, ...owner })
-          copied ||= r.copied
-        }
-      } catch (e) {
-        failures.push(`${s.name}: ${(e as ApiError).message}`)
-      }
+    const items = sources.map((s) => ({ src: s.path, dst: target(s) }))
+    try {
+      const job = await api.jobs.submit(
+        op === 'copy' ? { kind: 'copy', items, reflink, overwrite, ...owner } : { kind: 'move', items, overwrite, ...owner },
+      )
+      onqueued(job)
+    } catch (e) {
+      error = (e as ApiError).message
+    } finally {
+      busy = false
     }
-    busy = false
-    progress = ''
-    if (failures.length) {
-      error = failures.join('\n')
-      if (failures.length < sources.length) ondone(`${sources.length - failures.length} of ${sources.length} done`, true)
-      return
-    }
-    const what = sources.length === 1 ? sources[0].name : `${sources.length} items`
-    ondone(
-      op === 'copy'
-        ? `Copied ${what}: ${files} files, ${humanSize(bytes)}` +
-            (reflink === 'never' ? '' : `, ${reflinked} reflinked`)
-        : `Moved ${what}${copied ? ' (across filesystems, copied and removed)' : ''}`,
-    )
   }
 </script>
 
-<Modal {title} submitLabel={op === 'copy' ? 'Copy' : 'Move'} {busy} {error} onsubmit={submit} {onclose}>
+<Modal {title} submitLabel={op === 'copy' ? 'Start copy' : 'Start move'} {busy} {error} onsubmit={submit} {onclose}>
   <div class="ops">
     <label class="check"><input type="radio" bind:group={op} value="copy" /> Copy</label>
     <label class="check"><input type="radio" bind:group={op} value="move" /> Move</label>
@@ -153,7 +133,6 @@
     <input type="checkbox" bind:checked={overwrite} />
     {op === 'copy' ? 'Overwrite existing files (merges directories)' : 'Replace existing destination'}
   </label>
-  {#if progress}<p class="muted">{progress}</p>{/if}
 </Modal>
 
 <style>
