@@ -36,6 +36,21 @@ reflink copies.
   with live progress (bytes, items, speed, time left) and cancel, pushed to
   the browser over a WebSocket. Panes refresh automatically when a job or
   another browser tab changes a directory they show
+- **Find & disk usage**: an ncdu-style usage view with drill-down and a
+  per-owner breakdown (stays on one filesystem, hard links counted once);
+  search by name, type, owner, size and age, with presets for files whose
+  owner/group no longer exists, files not owned by the folder's owner,
+  world-writable and setuid/setgid files; free space per pane
+- **Permission helpers**: "fix owner" (recursively give a tree its own or
+  its parent's owner), chmod presets with separate folder/file modes
+  (755/644, 2775/664 …), owner cells highlighted when they differ from the
+  folder's owner or have no account, POSIX ACL editor (named entries and
+  default ACLs, optionally recursive), inode attributes (immutable,
+  append-only, no-COW …), and symlink/hard link creation
+- **Navigation & viewing**: type a path (Tab completes), places sidebar with
+  user homes and bookmarks, type-to-filter, sortable columns, hidden-file
+  toggle, a viewer for text/images/audio/video/hex, an editor for text files,
+  and a compare mode that highlights differences between the two panes
 
 When ownership changes on copy, setuid/setgid bits are cleared from regular
 files so a copy never becomes a setuid binary for its new owner.
@@ -49,7 +64,27 @@ files so a copy never becomes a setuid binary for its new owner.
 | Enter / Backspace | Open / go up |
 | Space, Insert | Toggle selection of cursor row |
 | Ctrl+A / Esc | Select all / clear selection |
-| F2 F3 F5 F6 F7 F8 | Rename, download, copy, move, new folder, delete |
+| F2 F3 F4 F5 F6 F7 F8 | Rename, view, edit, copy, move, new folder, delete |
+| Shift+F3 | Download |
+| Alt+Enter | Properties (ACL editor, attributes) |
+| Alt+F7 / Ctrl+U | Find / disk usage |
+| Ctrl+L | Type a path (Tab completes folder names) |
+| Letters, `/` | Filter the pane by name (Esc clears) |
+| Ctrl+H / Ctrl+= | Toggle hidden files / compare panes |
+
+### Viewing and editing
+
+Inline views (`download?inline=1`) are served with their real type only for
+raster images, audio and video; everything else, HTML and SVG included, is
+served as `text/plain`, and every download carries
+`X-Content-Type-Options: nosniff` and a sandboxing Content-Security-Policy,
+so files on the server can't run script in the app's origin.
+
+The editor handles UTF-8 text up to 5 MiB. Saving writes a temporary file
+with the original's owner, mode and extended attributes (including ACLs) and
+renames it over the original; if the file changed since it was opened the
+save is refused (409). As with most editors this gives the file a new inode,
+so other hard links keep the old contents.
 
 ## Archives
 
@@ -135,20 +170,26 @@ header). `dst` is always the full destination path. "owner…" means
 
 | Method | Path | Body / query |
 | --- | --- | --- |
-| GET | `/api/v1/fs/list` | `?path=/dir` |
+| GET | `/api/v1/fs/list` | `?path=/dir` → `{path, dir, fs, entries}` (`fs`: type, free/total, reflink support) |
 | GET | `/api/v1/fs/stat` | `?path=/file` |
 | GET | `/api/v1/fs/download` | `?path=` (files support ranges; directories stream as `.tar.gz`) |
 | POST | `/api/v1/fs/chown` | `{"path", "uid" or "user", "gid" or "group", "recursive"}` |
-| POST | `/api/v1/fs/chmod` | `{"path", "mode": "0755", "recursive"}` |
+| POST | `/api/v1/fs/chmod` | `{"path", "mode": "0755"` or `"dirMode": "755", "fileMode": "644", "recursive"}` |
 | POST | `/api/v1/fs/copy` | `{"src", "dst", "reflink": "auto\|always\|never", "overwrite", owner…}` → counts of files, dirs, reflinked, bytes |
 | POST | `/api/v1/fs/move` | `{"src", "dst", "overwrite", owner…}` |
 | POST | `/api/v1/fs/rename` | `{"path", "name"}` |
 | POST | `/api/v1/fs/mkdir` | `{"path", "mode", owner…}` (owner defaults to `inherit`) |
 | POST | `/api/v1/fs/delete` | `{"path"}` (recursive) |
 | POST | `/api/v1/fs/upload` | multipart; `?dir=&overwrite=&owner=` (owner defaults to `inherit`) |
-| GET | `/api/v1/users`, `/api/v1/groups` | |
-| POST | `/api/v1/jobs` | `{"kind": "copy\|move", "items": [{"src", "dst"}], …}` or `{"kind": "delete\|chown\|chmod", "paths": [...], …}` with the same options as the synchronous endpoints; `{"kind": "extract", "items": [{"src": archive, "dst": dir}], "password", "deleteOriginals", owner…}`; `{"kind": "archive", "paths": [...], "dst": file, "format", "overwrite", "deleteOriginals", owner…}` → 202 + job |
+| GET | `/api/v1/fs/props` | `?path=` → `{entry, acl, flags}` |
+| POST | `/api/v1/fs/acl` | `{"path", "acl": {"named": [{"kind": "user\|group", "id", "perm": 0-7}], "default": [...], "hasDefault"}}` |
+| POST | `/api/v1/fs/flags` | `{"path", "flags": {"immutable", "appendOnly", "noDump", "noAtime", "noCow"}}` |
+| POST | `/api/v1/fs/link` | `{"target", "path", "kind": "symlink\|hard", "relative"}` |
+| POST | `/api/v1/fs/write` | `{"path", "content", "expectSize", "expectMtime"}` (409 if changed) |
+| GET | `/api/v1/users`, `/api/v1/groups` | users include `home` |
+| POST | `/api/v1/jobs` | `{"kind": "copy\|move", "items": [{"src", "dst"}], …}` or `{"kind": "delete\|chown\|chmod", "paths": [...], …}` with the same options as the synchronous endpoints; `{"kind": "extract", "items": [{"src": archive, "dst": dir}], "password", "deleteOriginals", owner…}`; `{"kind": "archive", "paths": [...], "dst": file, "format", "overwrite", "deleteOriginals", owner…}`; `{"kind": "usage", "paths": [dir]}`; `{"kind": "find", "paths": [dir], "query": {"name", "type", "uid", "gid", "minSize", "maxSize", "modifiedAfter", "modifiedBefore", "orphaned", "foreignOwner", "worldWritable", "setuid", "crossMounts"}}`; `{"kind": "fixowner", "paths": [...], "match": "self\|parent"}`; `{"kind": "acl", "paths": [...], "acl": {…}, "recursive"}` → 202 + job |
 | GET | `/api/v1/jobs` | all jobs |
+| GET | `/api/v1/jobs/{id}/result` | result of a `usage` or `find` job |
 | GET | `/api/v1/info` | capabilities, e.g. `{"archive": {"create": ["zip", …, "7z"]}}` |
 | POST | `/api/v1/jobs/{id}/cancel`, `/api/v1/jobs/{id}/dismiss`, `/api/v1/jobs/clear` | |
 | GET | `/api/v1/ws` | WebSocket event stream (see below) |
