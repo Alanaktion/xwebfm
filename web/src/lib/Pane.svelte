@@ -171,8 +171,13 @@
   )
 
   // Keep the cursor row visible during keyboard navigation.
+  // Only when the cursor moves: activating a pane by clicking it must not
+  // scroll it back to a cursor row that is out of view.
+  let lastCursor = -1
   $effect(() => {
-    if (active) body?.querySelector(`[data-row="${pane.cursor}"]`)?.scrollIntoView({ block: 'nearest' })
+    const cursor = pane.cursor
+    if (active && cursor !== lastCursor) body?.querySelector(`[data-row="${cursor}"]`)?.scrollIntoView({ block: 'nearest' })
+    lastCursor = cursor
   })
 
   function dragStart(ev: DragEvent, entry: Entry) {

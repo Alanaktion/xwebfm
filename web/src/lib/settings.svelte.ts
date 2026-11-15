@@ -25,6 +25,8 @@ export const settings = $state({
   showHidden: read('showHidden', true),
   sidebar: read('sidebar', true),
   bookmarks: read<string[]>('bookmarks', []),
+  // When set, the status/result bar stays collapsed until revealed by hand.
+  hideStatus: read('hideStatus', false),
 })
 
 export function loadSetting<T>(key: string, fallback: T): T {

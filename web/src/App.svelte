@@ -55,6 +55,8 @@
   let groups = $state<Account[]>([])
   let uploadInput: HTMLInputElement
   let jobsOpen = $state(false)
+  let statusRevealed = $state(false)
+  let statusVisible = $derived(!settings.hideStatus || statusRevealed)
   let createFormats = $state<string[]>([])
 
   const jobs = new JobsStore({
@@ -350,9 +352,11 @@
   {#if jobsOpen}<JobsPanel store={jobs} onclose={() => (jobsOpen = false)} />{/if}
 
   <footer>
+    {#if statusVisible}
     <div class="status" class:error={status?.error} title={status?.text}>
       {#if status}{status.text}{:else}<span class="muted">Tab switches panes · Space/Insert selects · drag to copy or move · Ctrl+/ for all shortcuts</span>{/if}
     </div>
+    {/if}
     <div class="keys">
       <button onclick={actions.rename} disabled={targets.length !== 1}><kbd>F2</kbd>Rename</button>
       <button onclick={() => actions.view()} disabled={targets.length !== 1 || targets[0].type !== 'file'}><kbd>F3</kbd>View</button>
@@ -373,6 +377,9 @@
       <button onclick={actions.find} title="Alt+F7">Find</button>
       <button onclick={actions.usage} title="Ctrl+U">Usage</button>
       <span class="spacer"></span>
+      {#if settings.hideStatus}
+        <button class:on={statusRevealed} onclick={() => (statusRevealed = !statusRevealed)} aria-expanded={statusRevealed} title="Show or hide the status bar">Status</button>
+      {/if}
       <button class:on={settings.sidebar} onclick={actions.toggleSidebar} title="Show places">Places</button>
       <button onclick={() => (dialog = { kind: 'columns' })} title="Choose columns (or right-click a column header)">Columns</button>
       <button class:on={settings.showHidden} onclick={actions.toggleHidden} title="Ctrl+H">Hidden</button>
