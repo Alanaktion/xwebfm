@@ -8,6 +8,7 @@
     submitLabel = 'Apply',
     danger = false,
     wide = false,
+    full = false,
     onsubmit,
     onclose,
     children,
@@ -19,6 +20,8 @@
     danger?: boolean
     /** Wider dialog for content-heavy views. */
     wide?: boolean
+    /** Fill the window, for tools such as the SQLite browser. */
+    full?: boolean
     /** Without onsubmit the dialog only has a Close button. */
     onsubmit?: () => void
     onclose: () => void
@@ -43,6 +46,7 @@
     onclose()
   }}
   class:wide
+  class:full
 >
   <form
     onsubmit={(e) => {
@@ -66,4 +70,7 @@
 
 <style>
   dialog.wide { width: min(760px, calc(100vw - 32px)); }
+  dialog.full { width: calc(100vw - 32px); height: calc(100vh - 32px); height: calc(100dvh - 32px); max-width: none; max-height: none; }
+  dialog.full form { display: flex; flex-direction: column; height: 100%; }
+  dialog.full .actions { margin-top: 12px; }
 </style>

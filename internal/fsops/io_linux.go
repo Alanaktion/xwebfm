@@ -223,3 +223,22 @@ func copyXattrs(src string, fd int) {
 		}
 	}
 }
+
+// PinFile opens the directory holding the regular file p (which must not be a
+// symlink) and returns a handle for reaching the file through it.
+func (f *FS) PinFile(p string) (*PinnedFile, error) {
+	p = CleanPath(p)
+	dfd, name, err := f.openParent(p)
+	if err != nil {
+		return nil, err
+	}
+	e, err := f.entryAt(dfd, name, p)
+	if err == nil && e.Type != TypeFile {
+		err = &fs.PathError{Op: "open", Path: p, Err: ErrNotRegular}
+	}
+	if err != nil {
+		unix.Close(dfd)
+		return nil, err
+	}
+	return &PinnedFile{Entry: e, DirPath: procPath(dfd), Name: name, dir: os.NewFile(uintptr(dfd), path.Dir(p))}, nil
+}

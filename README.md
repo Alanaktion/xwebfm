@@ -51,6 +51,11 @@ reflink copies.
   user homes and bookmarks, type-to-filter, sortable columns, hidden-file
   toggle, a viewer for text/images/audio/video/hex, an editor for text files,
   and a compare mode that highlights differences between the two panes
+- **File tools**: viewers/editors for particular kinds of files, opened with
+  Enter or "Open with". The first is an SQLite browser for `.sqlite`,
+  `.sqlite3`, `.db`, `.db3`, `.s3db` and `.sl3` files: list tables and
+  views, page through rows sorted by any column, edit cells, add and delete
+  rows, and run arbitrary SQL
 
 When ownership changes on copy, setuid/setgid bits are cleared from regular
 files so a copy never becomes a setuid binary for its new owner.
@@ -61,7 +66,7 @@ files so a copy never becomes a setuid binary for its new owner.
 | --- | --- |
 | Tab | Switch pane |
 | ↑ ↓ PgUp PgDn Home End | Move cursor (Shift extends the selection) |
-| Enter / Backspace | Open / go up |
+| Enter / Backspace | Open (folders, archives, files with a tool) / go up |
 | Space, Insert | Toggle selection of cursor row |
 | Ctrl+A / Esc | Select all / clear selection |
 | F2 F3 F4 F5 F6 F7 F8 | Rename, view, edit, copy, move, new folder, delete |
@@ -90,6 +95,29 @@ with the original's owner, mode and extended attributes (including ACLs) and
 renames it over the original; if the file changed since it was opened the
 save is refused (409). As with most editors this gives the file a new inode,
 so other hard links keep the old contents.
+
+### File tools
+
+Tools are registered on both sides: in `internal/api/tools.go` (`fileTools`)
+with the extensions they handle and their actions, which the UI calls as
+`POST /api/v1/tools/{tool}/{action}` with `{"path", "args"}`, and in
+`web/src/lib/tools/index.ts` with the Svelte component that shows them.
+`/api/v1/info` lists the server's tools so the UI only offers those it has;
+a purely client-side tool can skip the server half.
+
+The SQLite tool (`internal/sqlitedb`) uses SQLite compiled to WebAssembly
+([ncruces/go-sqlite3](https://github.com/ncruces/go-sqlite3)), so the build
+stays cgo-free; the first database opened after start takes about a second
+while it compiles. Databases are opened through a handle on their
+directory (`/proc/self/fd/N/name`) with a VFS that refuses any other path,
+so the directory can't be swapped for a symlink mid-open, the file itself is
+opened with `O_NOFOLLOW`, and ATTACH / VACUUM INTO can only reach files in
+the same folder. Browsing uses read-only connections. Rows are identified by
+rowid, or by primary key in WITHOUT ROWID tables; views, virtual tables and
+tables whose rowid is shadowed by real columns are read-only in the grid
+(use SQL). Queries run statements in order in autocommit mode; a transaction
+left open is rolled back. Journals (and WAL files, for WAL databases) are
+created beside the database as root and removed as usual when it closes.
 
 ## Archives
 
@@ -135,6 +163,7 @@ stops part-way, and changes already made remain.
 | `cmd/xwebfm` | Entry point: flags, HTTP server, graceful shutdown |
 | `internal/fsops` | Filesystem operations and archive reading/writing, independent of HTTP |
 | `internal/jobs` | In-memory job queue, workers, progress and event fan-out |
+| `internal/sqlitedb` | SQLite browsing and editing for the SQLite file tool |
 | `internal/api` | JSON API and WebSocket over `fsops` and `jobs` |
 | `web/` | Svelte 5 + TypeScript SPA (Vite); `web/dist` is embedded into the binary |
 
@@ -224,7 +253,8 @@ header). `dst` is always the full destination path. "owner…" means
 | POST | `/api/v1/jobs` | `{"kind": "copy\|move", "items": [{"src", "dst"}], …}` or `{"kind": "delete\|chown\|chmod", "paths": [...], …}` with the same options as the synchronous endpoints; `{"kind": "extract", "items": [{"src": archive, "dst": dir}], "password", "deleteOriginals", owner…}`; `{"kind": "archive", "paths": [...], "dst": file, "format", "overwrite", "deleteOriginals", owner…}`; `{"kind": "usage", "paths": [dir]}`; `{"kind": "find", "paths": [dir], "query": {"name", "type", "uid", "gid", "minSize", "maxSize", "modifiedAfter", "modifiedBefore", "orphaned", "foreignOwner", "worldWritable", "setuid", "crossMounts"}}`; `{"kind": "fixowner", "paths": [...], "match": "self\|parent"}`; `{"kind": "acl", "paths": [...], "acl": {…}, "recursive"}` → 202 + job |
 | GET | `/api/v1/jobs` | all jobs |
 | GET | `/api/v1/jobs/{id}/result` | result of a `usage` or `find` job |
-| GET | `/api/v1/info` | capabilities, e.g. `{"archive": {"create": ["zip", …, "7z"]}}` |
+| GET | `/api/v1/info` | capabilities, e.g. `{"archive": {"create": ["zip", …, "7z"]}, "tools": [{"id": "sqlite", "name", "extensions"}]}` |
+| POST | `/api/v1/tools/sqlite/{action}` | `{"path", "args"}`; actions `objects`, `rows` (`{table, offset, limit, order, desc}`), `query` (`{sql, maxRows}`), `update` (`{table, key, column, value}`), `insert` (`{table, values}`), `delete` (`{table, keys}`). SQL errors are 400 `tool_error` |
 | POST | `/api/v1/jobs/{id}/cancel`, `/api/v1/jobs/{id}/dismiss`, `/api/v1/jobs/clear` | |
 | GET | `/api/v1/ws` | WebSocket event stream (see below) |
 | GET | `/healthz` | |

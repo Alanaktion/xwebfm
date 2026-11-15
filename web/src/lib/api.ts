@@ -189,8 +189,17 @@ export type JobRequest =
       deleteOriginals: boolean
     } & OwnerFields)
 
+/** A server-side file tool (see internal/api/tools.go). */
+export interface ServerTool {
+  id: string
+  name: string
+  /** Lower case, without the dot. */
+  extensions: string[]
+}
+
 export interface ServerInfo {
   archive: { create: string[] }
+  tools: ServerTool[]
 }
 
 /** Events streamed over /api/v1/ws. */
@@ -266,6 +275,10 @@ export const api = {
     }
     return (data as Entry[])[0]
   },
+
+  /** Calls an action of a server-side file tool on the file at path. */
+  tool: <T>(tool: string, action: string, path: string, args?: unknown) =>
+    request<T>('POST', `/api/v1/tools/${encodeURIComponent(tool)}/${encodeURIComponent(action)}`, { path, args }),
 
   downloadUrl: (path: string) => `/api/v1/fs/download${q(path)}`,
 

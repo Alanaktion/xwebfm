@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { api, ApiError, type Account, type Entry, type FindResult, type Job, type UsageReport } from './lib/api'
+  import { api, ApiError, type Account, type Entry, type FindResult, type Job, type ServerTool, type UsageReport } from './lib/api'
+  import { toolsFor, type FileTool } from './lib/tools'
   import { archiveInfo, humanSize, parentPath } from './lib/format'
   import ExtractDialog from './lib/ExtractDialog.svelte'
   import ArchiveDialog from './lib/ArchiveDialog.svelte'
@@ -43,6 +44,7 @@
     | { kind: 'columns' }
     | { kind: 'shortcuts' }
     | { kind: 'find'; root: string; rootOwner: string }
+    | { kind: 'tool'; tool: FileTool; entry: Entry }
 
   // Both pane directories live in the URL hash (#l=/a&r=/b) so reloads keep them.
   const hash = new URLSearchParams(location.hash.slice(1))
@@ -58,6 +60,8 @@
   let statusRevealed = $state(false)
   let statusVisible = $derived(!settings.hideStatus || statusRevealed)
   let createFormats = $state<string[]>([])
+  let serverTools = $state<ServerTool[]>([])
+  let toolMenu = $state(false)
 
   const jobs = new JobsStore({
     onchanged: (dirs) => {
@@ -79,6 +83,7 @@
   let other = $derived(panes[1 - active])
   let targets = $derived(pane.targets())
   let archives = $derived(targets.filter((t) => t.type === 'file' && archiveInfo(t.name)))
+  let fileTools = $derived(targets.length === 1 ? toolsFor(targets[0], serverTools) : [])
 
   $effect(() => {
     const params = new URLSearchParams({ l: panes[0].path, r: panes[1].path })
@@ -88,7 +93,10 @@
   onMount(() => {
     jobs.connect()
     panes.forEach((p) => p.load())
-    api.info().then((i) => (createFormats = i.archive.create)).catch(() => {})
+    api.info().then((i) => {
+      createFormats = i.archive.create
+      serverTools = i.tools ?? []
+    }).catch(() => {})
     api.users().then((u) => (users = u)).catch(() => {})
     api.groups().then((g) => (groups = g)).catch(() => {})
     return () => jobs.close()
@@ -196,12 +204,27 @@
         rootOwner: pane.dir ? (pane.dir.user ?? String(pane.dir.uid)) : 'its owner',
       }),
     archive: () => targets.length && (dialog = { kind: 'archive', sources: targets }),
+    /** Opens the selected file with a file tool (the only one, or a menu). */
+    openWith: (tool?: FileTool) => {
+      toolMenu = false
+      if (!tool && fileTools.length > 1) {
+        toolMenu = true
+        return
+      }
+      tool ??= fileTools[0]
+      if (tool) dialog = { kind: 'tool', tool, entry: targets[0] }
+    },
   }
 
-  /** Enter or double-click: archives open the extract dialog. */
+  /** Enter or double-click: archives open the extract dialog, and files with a tool open in it. */
   function openRow(p: PaneState, row: Row | undefined) {
     if (row && !row.parent && row.entry.type === 'file' && archiveInfo(row.entry.name)) {
       dialog = { kind: 'extract', archives: [row.entry] }
+      return
+    }
+    const tool = row && !row.parent ? toolsFor(row.entry, serverTools).find((t) => t.openOnEnter) : undefined
+    if (tool && row && !row.parent) {
+      dialog = { kind: 'tool', tool, entry: row.entry }
       return
     }
     p.open(row)
@@ -209,6 +232,10 @@
 
   function onKey(ev: KeyboardEvent) {
     if (dialog) return
+    if (toolMenu && ev.key === 'Escape') {
+      toolMenu = false
+      return
+    }
     const el = ev.target as HTMLElement
     if (el.closest('input, select, textarea')) return
     const ctrl = ev.ctrlKey || ev.metaKey
@@ -361,6 +388,20 @@
       <button onclick={actions.rename} disabled={targets.length !== 1}><kbd>F2</kbd>Rename</button>
       <button onclick={() => actions.view()} disabled={targets.length !== 1 || targets[0].type !== 'file'}><kbd>F3</kbd>View</button>
       <button onclick={() => actions.view(true)} disabled={targets.length !== 1 || targets[0].type !== 'file'}><kbd>F4</kbd>Edit</button>
+      <span class="menu-anchor">
+        <button
+          onclick={() => actions.openWith()}
+          disabled={!fileTools.length}
+          title={fileTools.length === 1 ? `Open in the ${fileTools[0].name} tool (Enter)` : 'Open with a viewer or editor for this kind of file'}
+        >Open with{fileTools.length === 1 ? ` ${fileTools[0].name}` : '…'}</button>
+        {#if toolMenu && fileTools.length > 1}
+          <div class="menu" role="menu">
+            {#each fileTools as t}
+              <button role="menuitem" onclick={() => actions.openWith(t)}>{t.name}</button>
+            {/each}
+          </div>
+        {/if}
+      </span>
       <button onclick={actions.download} disabled={!targets.length} title="Shift+F3">Download</button>
       <button onclick={actions.copy} disabled={!targets.length}><kbd>F5</kbd>Copy</button>
       <button onclick={actions.move} disabled={!targets.length}><kbd>F6</kbd>Move</button>
@@ -453,6 +494,9 @@
     status = { text: msg, error: false }
     panes.forEach((p) => p.load())
   }} />
+{:else if dialog?.kind === 'tool'}
+  {@const Tool = dialog.tool.component}
+  <Tool entry={dialog.entry} onclose={() => (dialog = null)} ondone={(msg) => (status = { text: msg, error: false })} />
 {:else if dialog?.kind === 'fixowner'}
   <FixOwnerDialog entries={dialog.entries} dir={pane.dir} onclose={() => (dialog = null)} onqueued={queued} />
 {:else if dialog?.kind === 'link'}
@@ -533,4 +577,21 @@
     text-align: center;
   }
   .offline { color: var(--danger); font-size: 10px; }
+  .menu-anchor { position: relative; display: inline-flex; }
+  .menu-anchor > button { display: inline-flex; padding: 3px 8px; }
+  .menu {
+    position: absolute;
+    bottom: calc(100% + 4px);
+    left: 0;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    min-width: 100%;
+    padding: 4px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgb(0 0 0 / 0.15);
+  }
+  .menu button { border: none; text-align: left; white-space: nowrap; }
 </style>

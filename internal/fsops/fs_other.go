@@ -30,6 +30,7 @@ func (f *FS) Rename(p, name string) error                                 { retu
 func (f *FS) Delete(ctx context.Context, p string, o DeleteOptions) error { return errUnsupported }
 func (f *FS) Mkdir(p string, o MkdirOptions) error                        { return errUnsupported }
 func (f *FS) OpenFile(p string) (*os.File, Entry, error)                  { return nil, Entry{}, errUnsupported }
+func (f *FS) PinFile(p string) (*PinnedFile, error)                       { return nil, errUnsupported }
 func (f *FS) WriteTar(ctx context.Context, p string, w io.Writer) error {
 	return errUnsupported
 }

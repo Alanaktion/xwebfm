@@ -12,6 +12,7 @@ package fsops
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path"
 	"strings"
 	"time"
@@ -231,3 +232,19 @@ func (o Ownership) validate(def OwnerPolicy) (Ownership, error) {
 	}
 	return o, nil
 }
+
+// PinnedFile is a regular file reached through an open handle on its
+// directory, for libraries that must open a file by path and also create
+// files beside it (such as SQLite and its journals). DirPath is the
+// directory's /proc magic link, so opening DirPath+"/"+Name never re-resolves
+// the directory by name: it can't be swapped for a symlink in between, and
+// only the final component is looked up.
+type PinnedFile struct {
+	Entry   Entry
+	DirPath string // e.g. "/proc/self/fd/12"
+	Name    string
+	dir     *os.File
+}
+
+// Close releases the directory handle; DirPath stops working.
+func (p *PinnedFile) Close() error { return p.dir.Close() }

@@ -7,7 +7,7 @@ export const SHORTCUTS: { group: string; keys: [string[], string][] }[] = [
     keys: [
       [['Tab'], 'Switch between panes'],
       [['↑', '↓', 'PgUp', 'PgDn', 'Home', 'End'], 'Move the cursor'],
-      [['Enter'], 'Open folder, extract archive, or download file'],
+      [['Enter'], 'Open folder, extract archive, open in a file tool (SQLite), or download'],
       [['Backspace'], 'Go up (or back from search results)'],
       [['Ctrl', 'L'], 'Type a path (Tab completes folder names)'],
       [['A–Z', '0–9', '/'], 'Filter the pane by name (Esc clears)'],

@@ -461,6 +461,7 @@ type infoResponse struct {
 	Archive struct {
 		Create []fsops.ArchiveFormat `json:"create"`
 	} `json:"archive"`
+	Tools []*FileTool `json:"tools"`
 }
 
 // handleInfo reports server capabilities the UI adapts to.
@@ -470,6 +471,7 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	if fsops.SevenZipAvailable() {
 		res.Archive.Create = append(res.Archive.Create, fsops.Format7z)
 	}
+	res.Tools = fileTools
 	writeJSON(w, http.StatusOK, res)
 }
 
