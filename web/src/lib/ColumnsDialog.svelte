@@ -1,7 +1,7 @@
 <script lang="ts">
   import { COLUMNS, defaultColumns } from './columns'
   import Modal from './Modal.svelte'
-  import { persist, persistHideStatus, settings } from './settings.svelte'
+  import { persist, settings } from './settings.svelte'
 
   let { onclose }: { onclose: () => void } = $props()
 
@@ -31,9 +31,9 @@
     <input
       type="checkbox"
       bind:checked={settings.hideStatus}
-      onchange={() => persistHideStatus(settings.hideStatus)}
+      onchange={() => persist('hideStatus', settings.hideStatus)}
     />
-    <span>Hide status messages <span class="muted">— keep the status bar collapsed until revealed with the Status button (stored in a cookie)</span></span>
+    <span>Hide status messages <span class="muted">— keep the status bar collapsed until revealed with the Status button</span></span>
   </label>
 </Modal>
 
