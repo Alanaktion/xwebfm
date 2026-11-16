@@ -212,6 +212,24 @@ export class PaneState {
     }
   }
 
+  /**
+   * Right-click on a row: an unselected row becomes the selection, while a
+   * selected one keeps the selection so the menu acts on all of it.
+   */
+  contextSelect(i: number) {
+    const row = this.rows[i]
+    if (!row) return
+    this.cursor = i
+    if (row.parent) {
+      this.selected.clear()
+      return
+    }
+    if (this.selected.has(row.entry.path)) return
+    this.#anchor = i
+    this.selected.clear()
+    this.selected.add(row.entry.path)
+  }
+
   #selectRange(i: number, add: boolean) {
     const [a, b] = [Math.min(this.#anchor, i), Math.max(this.#anchor, i)]
     if (!add) this.selected.clear()

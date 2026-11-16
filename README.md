@@ -78,6 +78,7 @@ files so a copy never becomes a setuid binary for its new owner.
 | F2 F3 F4 F5 F6 F7 F8 | Rename, view, edit, copy, move, new folder, delete |
 | Shift+F3 | Download |
 | Alt+Enter | Properties (ACL editor, attributes) |
+| Shift+F10, Menu key | Menu of actions for the selection (or right-click) |
 | Alt+F7 / Ctrl+U | Find / disk usage |
 | Ctrl+L | Type a path (Tab completes folder names) |
 | Letters, `/` | Filter the pane by name (Esc clears) |

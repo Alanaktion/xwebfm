@@ -26,6 +26,7 @@
   import RenameDialog from './lib/RenameDialog.svelte'
   import MkdirDialog from './lib/MkdirDialog.svelte'
   import DeleteDialog from './lib/DeleteDialog.svelte'
+  import ContextMenu, { type MenuItem } from './lib/ContextMenu.svelte'
 
   type Dialog =
     | { kind: 'transfer'; op: 'copy' | 'move'; sources: Entry[]; dest: string }
@@ -62,6 +63,7 @@
   let createFormats = $state<string[]>([])
   let serverTools = $state<ServerTool[]>([])
   let toolMenu = $state(false)
+  let contextMenu = $state<{ x: number; y: number; label: string; items: MenuItem[] } | null>(null)
 
   const jobs = new JobsStore({
     onchanged: (dirs) => {
@@ -218,6 +220,75 @@
     },
   }
 
+  /** Items for the right-click menu on the active pane's targets, or on its folder. */
+  function menuItems(onFolder: boolean): MenuItem[] {
+    if (onFolder || !targets.length) {
+      return [
+        { label: 'New folder…', hint: 'F7', run: actions.mkdir },
+        { label: 'Upload…', run: actions.upload },
+        'sep',
+        { label: 'Select all', hint: 'Ctrl+A', run: () => pane.selectAll() },
+        { label: 'Find…', hint: 'Alt+F7', run: actions.find },
+        { label: 'Disk usage', hint: 'Ctrl+U', run: actions.usage },
+        { label: 'Refresh', hint: 'Ctrl+R', run: () => panes.forEach((p) => p.load()) },
+        'sep',
+        { label: 'Folder properties', run: () => (dialog = { kind: 'props', path: pane.path }) },
+      ]
+    }
+    const one = targets.length === 1 ? targets[0] : undefined
+    const isFile = one?.type === 'file'
+    const to = other.path
+    const items: MenuItem[] = []
+    if (one && one.type !== 'file') {
+      items.push({ label: 'Open', hint: 'Enter', run: () => pane.navigate(one.path) })
+    }
+    if (isFile && archives.length) items.push({ label: 'Extract…', hint: 'Enter', run: actions.extract })
+    if (isFile) {
+      for (const t of fileTools) {
+        items.push({ label: `Open with ${t.name}`, hint: t.openOnEnter && t === fileTools.find((f) => f.openOnEnter) ? 'Enter' : undefined, run: () => actions.openWith(t) })
+      }
+      items.push({ label: 'View', hint: 'F3', run: () => actions.view() })
+      items.push({ label: 'Edit', hint: 'F4', run: () => actions.view(true) })
+    }
+    items.push({ label: 'Download', hint: 'Shift+F3', run: actions.download })
+    items.push('sep')
+    items.push({ label: `Copy to ${to}…`, hint: 'F5', run: actions.copy })
+    items.push({ label: `Move to ${to}…`, hint: 'F6', run: actions.move })
+    if (one) items.push({ label: 'Rename…', hint: 'F2', run: actions.rename })
+    items.push({ label: 'Link…', run: actions.link })
+    items.push('sep')
+    if (archives.length > 1 || (archives.length && !one)) items.push({ label: archives.length > 1 ? `Extract ${archives.length} archives…` : 'Extract…', run: actions.extract })
+    if (createFormats.length) items.push({ label: 'Add to archive…', run: actions.archive })
+    items.push('sep')
+    items.push({ label: 'Owner…', run: actions.chown })
+    if (targets.some((t) => t.type !== 'symlink')) items.push({ label: 'Mode…', run: actions.chmod })
+    if (targets.some((t) => t.type === 'dir')) items.push({ label: 'Fix owner…', run: actions.fixowner })
+    if (one) items.push({ label: 'Properties', hint: 'Alt+Enter', run: actions.props })
+    items.push('sep')
+    items.push({ label: 'Delete…', hint: 'F8', danger: true, run: actions.delete })
+    return items
+  }
+
+  function openMenu(x: number, y: number, onFolder: boolean) {
+    toolMenu = false
+    const n = targets.length
+    contextMenu = {
+      x,
+      y,
+      label: onFolder || !n ? `Folder ${pane.path}` : n === 1 ? targets[0].name : `${n} items`,
+      items: menuItems(onFolder),
+    }
+  }
+
+  /** Context menu key or Shift+F10: opens the menu beside the cursor row. */
+  function openMenuFromKeyboard() {
+    const row = document.querySelector(`.pane.active tr[data-row="${pane.cursor}"]`)
+    const box = (row ?? document.querySelector('.pane.active .body'))?.getBoundingClientRect()
+    if (!box) return
+    const r = pane.rows[pane.cursor]
+    openMenu(box.left + 24, row ? box.bottom : box.top + 8, !row || !r || r.parent)
+  }
+
   /** Enter or double-click: archives open the extract dialog, and files with a tool open in it. */
   function openRow(p: PaneState, row: Row | undefined) {
     if (row && !row.parent && row.entry.type === 'file' && archiveInfo(row.entry.name)) {
@@ -233,7 +304,14 @@
   }
 
   function onKey(ev: KeyboardEvent) {
-    if (dialog) return
+    if (dialog || contextMenu) return
+    if (ev.key === 'ContextMenu' || (ev.shiftKey && ev.key === 'F10')) {
+      const el = ev.target as HTMLElement
+      if (el.closest('input, select, textarea')) return
+      ev.preventDefault()
+      openMenuFromKeyboard()
+      return
+    }
     if (toolMenu && ev.key === 'Escape') {
       toolMenu = false
       return
@@ -373,6 +451,10 @@
           onupload={upload}
           onopen={(row) => openRow(p, row)}
           oncolumns={() => (dialog = { kind: 'columns' })}
+          onmenu={(x, y, onFolder) => {
+            active = i
+            openMenu(x, y, onFolder)
+          }}
         />
       {/each}
     </div>
@@ -437,6 +519,10 @@
     </div>
   </footer>
 </div>
+
+{#if contextMenu}
+  <ContextMenu {...contextMenu} onclose={() => (contextMenu = null)} />
+{/if}
 
 <input
   type="file"

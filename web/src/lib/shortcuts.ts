@@ -35,6 +35,7 @@ export const SHORTCUTS: { group: string; keys: [string[], string][] }[] = [
       [['F7'], 'New folder'],
       [['F8', 'Delete'], 'Delete'],
       [['Alt', 'Enter'], 'Properties (ACLs, attributes)'],
+      [['Shift', 'F10'], 'Menu of actions for the selection (also the Menu key or right-click)'],
     ],
   },
   {

@@ -24,6 +24,7 @@
     onupload,
     onopen,
     oncolumns,
+    onmenu,
     compareWith = null,
   }: {
     pane: PaneState
@@ -38,6 +39,11 @@
     onopen: (row: Row) => void
     /** Opens the column chooser (right-click on the header). */
     oncolumns: () => void
+    /**
+     * Right-click at (x, y): on a file row (after selecting it if needed),
+     * or on empty space or ".." for the folder itself.
+     */
+    onmenu: (x: number, y: number, onFolder: boolean) => void
     /** The other pane, when comparing directories. */
     compareWith?: PaneState | null
   } = $props()
@@ -296,7 +302,16 @@
     <button onclick={() => pane.load()} disabled={pane.loading} title="Refresh">⟳</button>
   </header>
 
-  <div class="body" bind:this={body}>
+  <div
+    class="body"
+    bind:this={body}
+    role="presentation"
+    oncontextmenu={(ev) => {
+      ev.preventDefault()
+      pane.selected.clear()
+      onmenu(ev.clientX, ev.clientY, true)
+    }}
+  >
     {#if pane.error}<p class="error">{pane.error}</p>{/if}
     {#if pane.stale && !pane.results}
       <div class="loading" role="status">
@@ -307,6 +322,7 @@
       <thead
         oncontextmenu={(ev) => {
           ev.preventDefault()
+          ev.stopPropagation()
           oncolumns()
         }}
         title="Right-click to choose columns"
@@ -337,6 +353,12 @@
             draggable={e ? 'true' : 'false'}
             onclick={(ev) => pane.click(i, ev)}
             ondblclick={() => onopen(row)}
+            oncontextmenu={(ev) => {
+              ev.preventDefault()
+              ev.stopPropagation()
+              pane.contextSelect(i)
+              onmenu(ev.clientX, ev.clientY, row.parent)
+            }}
             ondragstart={(ev) => e && dragStart(ev, e)}
             ondragover={(ev) => dragOver(ev, target)}
             ondrop={(ev) => drop(ev, target)}
