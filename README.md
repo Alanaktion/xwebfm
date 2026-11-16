@@ -50,7 +50,8 @@ reflink copies.
   append-only, no-COW …), and symlink/hard link creation
 - **Navigation & viewing**: type a path (Tab completes), places sidebar with
   user homes and bookmarks, type-to-filter, sortable columns, hidden-file
-  toggle, a viewer for text/images/audio/video/hex, an editor for text files,
+  toggle, a viewer for text/images/audio/video/hex, a code/config editor
+  (CodeMirror: syntax highlighting, search and replace, folding),
   and a compare mode that highlights differences between the two panes
 - **File tools**: viewers/editors for particular kinds of files, opened with
   Enter or "Open with". The first is an SQLite browser for `.sqlite`,
@@ -90,6 +91,11 @@ raster images, audio and video; everything else, HTML and SVG included, is
 served as `text/plain`, and every download carries
 `X-Content-Type-Options: nosniff` and a sandboxing Content-Security-Policy,
 so files on the server can't run script in the app's origin.
+
+Text is shown and edited in CodeMirror, which is loaded only when a text
+file is opened; the language mode is picked from the file name (Dockerfile,
+nginx.conf, .env…) and fetched on demand. The editor keeps a file's CRLF
+line endings and byte order mark, and indents the way the file already does.
 
 The editor handles UTF-8 text up to 5 MiB. Saving writes a temporary file
 with the original's owner, mode and extended attributes (including ACLs) and

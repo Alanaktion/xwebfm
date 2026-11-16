@@ -3,10 +3,13 @@
   import { api, ApiError, type Entry } from './api'
   import { humanSize } from './format'
   import Modal from './Modal.svelte'
+  import TextEditor from './editor/TextEditor.svelte'
+  import type { EditorHandle, EditorInfo } from './editor/codemirror'
+  import { loadSetting, persist } from './settings.svelte'
 
   let {
     entry: initial,
-    edit = false,
+    edit: initialEdit = false,
     onclose,
     ondone,
   }: {
@@ -34,17 +37,25 @@
   let hex = $state('')
   let truncated = $state(false)
   let editing = $state(false)
-  let draft = $state('')
+  /** A byte order mark the file started with, kept on save. */
+  let bom = $state('')
+  let editor = $state<EditorHandle | null>(null)
+  let info = $state<EditorInfo | null>(null)
+  let language = $state<string | null>(null)
+  let wrap = $state(loadSetting('editorWrap', false))
+  // Bumped to recreate the editor with freshly loaded text.
+  let generation = $state(0)
   let busy = $state(false)
   let error = $state('')
   let conflict = $state(false)
 
   let src = $derived(`${api.downloadUrl(entry.path)}&inline=1`)
-  let dirty = $derived(editing && draft !== text)
+  let dirty = $derived(editing && !!info?.dirty)
+  let crlf = $derived(text.includes('\r\n'))
 
   onMount(load)
 
-  async function load() {
+  async function load(edit = initialEdit) {
     error = ''
     conflict = false
     const m = media[ext(entry.name)]
@@ -62,10 +73,10 @@
       let decoded: string | null = null
       if (!binary) {
         try {
-          decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+          decoded = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)
         } catch {
           // A cut-off multi-byte character at the end is fine for viewing.
-          decoded = truncated ? new TextDecoder().decode(bytes) : null
+          decoded = truncated ? new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes) : null
         }
       }
       if (decoded === null) {
@@ -75,16 +86,18 @@
         if (edit) error = 'This is not UTF-8 text, so it can only be viewed.'
         return
       }
+      bom = decoded.startsWith('\ufeff') ? '\ufeff' : ''
+      text = decoded.slice(bom.length)
       kind = 'text'
-      text = decoded
+      editing = false
       if (edit) {
         if (entry.size > EDIT_LIMIT) {
           error = `Files over ${humanSize(EDIT_LIMIT)} can't be edited here.`
         } else {
           editing = true
-          draft = text
         }
       }
+      generation++
     } catch (e) {
       error = (e as Error).message
     }
@@ -105,8 +118,10 @@
     busy = true
     error = ''
     try {
-      entry = await api.write({ path: entry.path, content: draft, expectSize: entry.size, expectMtime: entry.mtime })
-      text = draft
+      const content = editor!.getText()
+      entry = await api.write({ path: entry.path, content: bom + content, expectSize: entry.size, expectMtime: entry.mtime })
+      text = content
+      editor!.markSaved()
       ondone(`Saved ${entry.name}`)
     } catch (e) {
       conflict = e instanceof ApiError && e.status === 409
@@ -120,8 +135,23 @@
 
   async function reload() {
     entry = await api.stat(entry.path)
-    editing = false
-    await load()
+    await load(editing)
+  }
+
+  /** Switches the viewer to editing, loading the rest of the file first if the view was cut short. */
+  async function startEdit() {
+    if (editing || kind !== 'text' || entry.size > EDIT_LIMIT) return
+    if (truncated) {
+      await load(true)
+    } else {
+      editing = true
+    }
+    editor?.focus()
+  }
+
+  function toggleWrap() {
+    wrap = !wrap
+    persist('editorWrap', wrap)
   }
 
   function close() {
@@ -132,14 +162,23 @@
   function keydown(ev: KeyboardEvent) {
     if ((ev.ctrlKey || ev.metaKey) && ev.key === 's' && editing) {
       ev.preventDefault()
-      if (!busy) save()
+      if (!busy && editor) save()
+    } else if (ev.key === 'F4' && !editing) {
+      ev.preventDefault()
+      startEdit()
+    } else if (ev.altKey && ev.code === 'KeyZ') {
+      ev.preventDefault()
+      toggleWrap()
     }
   }
 </script>
 
+<svelte:window onkeydown={keydown} />
+
 <Modal
   title="{editing ? 'Edit' : 'View'}: {entry.name}"
-  wide
+  wide={kind !== 'text'}
+  full={kind === 'text'}
   {error}
   {busy}
   submitLabel="Save"
@@ -150,13 +189,17 @@
     <span class="mono">{entry.path}</span> · {humanSize(entry.size)}
     {#if truncated}· showing the first {humanSize(kind === 'hex' ? HEX_LIMIT : VIEW_LIMIT)}{/if}
     {#if !editing && kind === 'text' && entry.size <= EDIT_LIMIT}
-      <button type="button" class="small" onclick={() => ((editing = true), (draft = text))}>Edit (F4)</button>
+      <button type="button" class="small" onclick={startEdit}>Edit (F4)</button>
+    {/if}
+    {#if kind === 'text'}
+      <label class="small wrapopt" title="Wrap long lines (Alt+Z)">
+        <input type="checkbox" checked={wrap} onchange={toggleWrap} /> Wrap
+      </label>
     {/if}
     <a class="small" href={api.downloadUrl(entry.path)} download>Download</a>
   </p>
 
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="content" onkeydown={keydown}>
+  <div class="content" class:code={kind === 'text'}>
     {#if kind === 'loading'}
       <p class="muted">Loading…</p>
     {:else if kind === 'image'}
@@ -168,19 +211,40 @@
       <video controls {src}></video>
     {:else if kind === 'hex'}
       <pre class="mono hex">{hex}</pre>
-    {:else if editing}
-      <!-- svelte-ignore a11y_autofocus -->
-      <textarea class="mono" bind:value={draft} spellcheck="false" autofocus></textarea>
-      <p class="muted note">
-        Ctrl+S saves. Saving writes a new file with the same owner, mode and ACL and swaps it in, so other hard
-        links keep the old contents.
-      </p>
     {:else}
-      <ol class="mono text">
-        {#each text.split('\n') as line}<li>{line || ' '}</li>{/each}
-      </ol>
+      {#key generation}
+        <TextEditor
+          doc={text}
+          filename={entry.name}
+          readOnly={!editing}
+          {wrap}
+          autofocus
+          bind:handle={editor}
+          bind:info
+          bind:language
+        />
+      {/key}
     {/if}
   </div>
+  {#if kind === 'text'}
+    <p class="status muted">
+      {#if info}
+        <span>Ln {info.line}, Col {info.col}{#if info.selected} ({info.selected} selected){/if}</span>
+        <span>{info.lines.toLocaleString()} lines</span>
+      {/if}
+      <span>{language ?? 'Plain text'}</span>
+      {#if editor}<span>{editor.indent}</span>{/if}
+      <span>{crlf ? 'CRLF' : 'LF'}{bom ? ' · BOM' : ''}</span>
+      {#if dirty}<span class="modified">Modified</span>{/if}
+    </p>
+    {#if editing}
+      <p class="muted note">
+        Ctrl+S saves, Ctrl+F finds and replaces, Alt+Z toggles wrapping, Esc leaves the editor's search or the dialog.
+        Saving writes a new file with the same owner, mode and ACL and swaps it in, so other hard links keep the old
+        contents.
+      </p>
+    {/if}
+  {/if}
   {#if conflict}<button type="button" onclick={reload}>Reload from disk</button>{/if}
 </Modal>
 
@@ -191,18 +255,10 @@
   .content { max-height: 65vh; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
   img, video { max-width: 100%; max-height: 64vh; display: block; margin: 0 auto; }
   audio { width: 100%; margin: 12px 0; }
-  pre, ol { margin: 0; padding: 8px; font-size: 12px; line-height: 1.45; }
-  ol.text { padding-left: 4.5em; white-space: pre-wrap; word-break: break-all; }
-  ol.text li::marker { color: var(--muted); font-size: 11px; }
-  textarea {
-    width: 100%;
-    height: 58vh;
-    border: none;
-    padding: 8px;
-    font-size: 12px;
-    line-height: 1.45;
-    resize: vertical;
-    tab-size: 4;
-  }
-  .note { font-size: 11px; margin: 4px 8px; }
+  pre { margin: 0; padding: 8px; font-size: 12px; line-height: 1.45; }
+  .content.code { flex: 1; min-height: 120px; max-height: none; overflow: hidden; }
+  .wrapopt { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+  .status { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11px; margin: 4px 2px 0; }
+  .status .modified { color: var(--warn); }
+  .note { font-size: 11px; margin: 4px 2px; }
 </style>

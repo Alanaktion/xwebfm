@@ -9,6 +9,20 @@
   --danger: #b91c1c;
   --warn: #b45309;
   --ok: #15803d;
+  /* Code editor syntax colours */
+  --cm-keyword: #a626a4;
+  --cm-string: #3f7d1c;
+  --cm-number: #b75501;
+  --cm-comment: #7c8492;
+  --cm-function: #2f5fc4;
+  --cm-type: #b2365b;
+  --cm-property: #0f6e8c;
+  --cm-def: #1d1f23;
+  --cm-meta: #8a6100;
+  --cm-active-line: rgba(37, 99, 235, 0.05);
+  --cm-match: rgba(250, 204, 21, 0.3);
+  --cm-match-current: rgba(250, 160, 21, 0.55);
+  --cm-trailing: rgba(239, 68, 68, 0.15);
   color-scheme: light dark;
   font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
   font-size: 14px;
@@ -25,6 +39,19 @@
     --danger: #f87171;
     --warn: #fbbf24;
     --ok: #4ade80;
+    --cm-keyword: #d68ef0;
+    --cm-string: #9ccc65;
+    --cm-number: #f0a35e;
+    --cm-comment: #7d8590;
+    --cm-function: #7ab4ff;
+    --cm-type: #f08aa8;
+    --cm-property: #6fd0e8;
+    --cm-def: #e6e7e9;
+    --cm-meta: #e5c07b;
+    --cm-active-line: rgba(255, 255, 255, 0.04);
+    --cm-match: rgba(250, 204, 21, 0.2);
+    --cm-match-current: rgba(250, 160, 21, 0.45);
+    --cm-trailing: rgba(248, 113, 113, 0.2);
   }
 }
 * { box-sizing: border-box; }
