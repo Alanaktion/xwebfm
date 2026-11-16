@@ -67,7 +67,7 @@ func (e *ToolError) Error() string { return e.Err.Error() }
 func (e *ToolError) Unwrap() error { return e.Err }
 
 // fileTools are the registered tools, in the order the UI lists them.
-var fileTools = []*FileTool{sqliteTool}
+var fileTools = []*FileTool{sqliteTool, logTool}
 
 func findTool(id string) *FileTool {
 	for _, t := range fileTools {

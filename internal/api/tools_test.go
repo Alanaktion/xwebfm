@@ -4,6 +4,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -76,5 +77,54 @@ func TestSQLiteTool(t *testing.T) {
 	}
 	if code := doJSON(t, "POST", ts.URL+"/api/v1/tools/nope/x", `{"path": "/app.db"}`, &eb); code != 404 {
 		t.Errorf("unknown tool: %d", code)
+	}
+}
+
+func TestLogTool(t *testing.T) {
+	ts, dir := newTestServer(t)
+	p := filepath.Join(dir, "app.log")
+	os.WriteFile(p, []byte("one\nERROR two\nthree\n"), 0o644)
+	call := func(action, body string, out any) int {
+		return doJSON(t, "POST", ts.URL+"/api/v1/tools/log/"+action, body, out)
+	}
+	type page struct {
+		Lines []struct {
+			O int64  `json:"o"`
+			T string `json:"t"`
+			L string `json:"l"`
+		} `json:"lines"`
+		Start, End, Size int64
+		Inode            uint64
+		Reset            bool
+	}
+	var pg page
+	if code := call("tail", `{"path": "/app.log", "args": {"lines": 2}}`, &pg); code != 200 || len(pg.Lines) != 2 || pg.Lines[0].T != "ERROR two" || pg.Lines[0].L != "error" || pg.End != 20 || pg.Start != 4 || pg.Inode == 0 {
+		t.Fatalf("tail: %d %+v", code, pg)
+	}
+	inode := pg.Inode
+	f, _ := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString("four\nfi")
+	f.Close()
+	pg = page{}
+	body := fmt.Sprintf(`{"path": "/app.log", "args": {"after": 20, "inode": %d}}`, inode)
+	if code := call("follow", body, &pg); code != 200 || len(pg.Lines) != 2 || pg.Lines[1].T != "fi" || pg.End != 25 || pg.Reset {
+		t.Errorf("follow: %d %+v", code, pg)
+	}
+	// Truncated: the client must start over.
+	os.WriteFile(p, []byte("new\n"), 0o644)
+	pg = page{}
+	if code := call("follow", body, &pg); code != 200 || !pg.Reset {
+		t.Errorf("follow after truncate: %d %+v", code, pg)
+	}
+	// Rotated: a new file under the same name.
+	os.Rename(p, p+".1")
+	os.WriteFile(p, []byte("x\n"), 0o644)
+	pg = page{}
+	if code := call("follow", fmt.Sprintf(`{"path": "/app.log", "args": {"after": 0, "inode": %d}}`, inode), &pg); code != 200 || !pg.Reset {
+		t.Errorf("follow after rotate: %d %+v", code, pg)
+	}
+	var eb errorBody
+	if code := call("tail", `{"path": "/app.log", "args": {"filter": {"text": "(", "regex": true}}}`, &eb); code != 400 || eb.Error.Code != "tool_error" {
+		t.Errorf("bad regex: %d %+v", code, eb)
 	}
 }

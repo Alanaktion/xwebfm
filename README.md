@@ -57,7 +57,11 @@ reflink copies.
   Enter or "Open with". The first is an SQLite browser for `.sqlite`,
   `.sqlite3`, `.db`, `.db3`, `.s3db` and `.sl3` files: list tables and
   views, page through rows sorted by any column, edit cells, add and delete
-  rows, and run arbitrary SQL
+  rows, and run arbitrary SQL. The log viewer opens `.log`, `.out` and
+  `.err` files (and rotated ones such as `app.log.1`) at the end, loads
+  earlier lines as you scroll up, filters by text, regular expression or
+  minimum level on the server, searches the loaded lines, and follows the
+  file as it grows, starting over when it's truncated or rotated
 
 When ownership changes on copy, setuid/setgid bits are cleared from regular
 files so a copy never becomes a setuid binary for its new owner.
@@ -171,6 +175,7 @@ stops part-way, and changes already made remain.
 | `internal/fsops` | Filesystem operations and archive reading/writing, independent of HTTP |
 | `internal/jobs` | In-memory job queue, workers, progress and event fan-out |
 | `internal/sqlitedb` | SQLite browsing and editing for the SQLite file tool |
+| `internal/logview` | paging, filtering and following log files for the log file tool |
 | `internal/api` | JSON API and WebSocket over `fsops` and `jobs` |
 | `web/` | Svelte 5 + TypeScript SPA (Vite); `web/dist` is embedded into the binary |
 
@@ -262,6 +267,7 @@ header). `dst` is always the full destination path. "owner…" means
 | GET | `/api/v1/jobs/{id}/result` | result of a `usage` or `find` job |
 | GET | `/api/v1/info` | capabilities, e.g. `{"archive": {"create": ["zip", …, "7z"]}, "tools": [{"id": "sqlite", "name", "extensions"}]}` |
 | POST | `/api/v1/tools/sqlite/{action}` | `{"path", "args"}`; actions `objects`, `rows` (`{table, offset, limit, order, desc}`), `query` (`{sql, maxRows}`), `update` (`{table, key, column, value}`), `insert` (`{table, values}`), `delete` (`{table, keys}`). SQL errors are 400 `tool_error` |
+| POST | `/api/v1/tools/log/{action}` | `{"path", "args"}`; actions `tail` (`{before?, lines?, filter?}`: lines ending before byte offset `before`, default the end) and `follow` (`{after, inode, lines?, filter?}`: lines from `after`, or `{reset: true}` if the file was truncated or replaced). `filter` is `{text, regex, case, not, level}`; pages are `{lines: [{o, t, l?, cut?, partial?}], start, end, more?, size, inode}` |
 | POST | `/api/v1/jobs/{id}/cancel`, `/api/v1/jobs/{id}/dismiss`, `/api/v1/jobs/clear` | |
 | GET | `/api/v1/ws` | WebSocket event stream (see below) |
 | GET | `/healthz` | |

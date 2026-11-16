@@ -6,6 +6,7 @@
 
 import type { Component } from 'svelte'
 import type { Entry, ServerTool } from '../api'
+import LogTool from './LogTool.svelte'
 import SqliteTool from './SqliteTool.svelte'
 
 /** Props every tool component receives. */
@@ -29,17 +30,29 @@ export interface FileTool {
   openOnEnter?: boolean
 }
 
-const TOOLS: FileTool[] = [{ id: 'sqlite', name: 'SQLite', component: SqliteTool, server: true, openOnEnter: true }]
+const TOOLS: FileTool[] = [
+  { id: 'sqlite', name: 'SQLite', component: SqliteTool, server: true, openOnEnter: true },
+  { id: 'log', name: 'Log viewer', component: LogTool, server: true, openOnEnter: true },
+]
 
 /** The tools available for a file, given the server's tools from /api/v1/info. */
 export function toolsFor(entry: Entry, serverTools: ServerTool[]): FileTool[] {
   if (entry.type !== 'file') return []
-  const dot = entry.name.lastIndexOf('.')
-  if (dot <= 0) return []
-  const ext = entry.name.slice(dot + 1).toLowerCase()
+  const ext = extension(entry.name)
+  if (!ext) return []
   return TOOLS.filter((t) => {
     const srv = serverTools.find((s) => s.id === t.id)
     if (t.server && !srv) return false
     return (t.extensions ?? srv?.extensions ?? []).includes(ext)
   })
+}
+
+/**
+ * The file's extension, looking past a rotation number, so app.log.1
+ * counts as .log.
+ */
+function extension(name: string): string {
+  const base = name.toLowerCase().replace(/(\.[^.]+)\.\d+$/, '$1')
+  const dot = base.lastIndexOf('.')
+  return dot > 0 ? base.slice(dot + 1) : ''
 }
