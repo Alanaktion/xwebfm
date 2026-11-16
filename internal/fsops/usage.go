@@ -3,6 +3,7 @@ package fsops
 import (
 	"fmt"
 	"path"
+	"strings"
 	"time"
 )
 
@@ -57,7 +58,19 @@ type FindQuery struct {
 	Setuid bool `json:"setuid,omitempty"`
 	// CrossMounts descends into other filesystems mounted below the root.
 	CrossMounts bool `json:"crossMounts,omitempty"`
-	Limit       int  `json:"limit,omitempty"` // default and maximum 5000
+	// Content, when set, also requires a regular text file containing this
+	// text (case-insensitive). Off by default since it reads every
+	// candidate file; binary files and files over ContentMaxSize are
+	// skipped and counted in FindResult.ContentSkipped.
+	Content        string `json:"content,omitempty"`
+	ContentMaxSize *int64 `json:"contentMaxSize,omitempty"` // default 4 MiB, at most 64 MiB
+	Limit          int    `json:"limit,omitempty"`          // default and maximum 5000
+}
+
+// ContentMatch is the first line of a file that matched a content search.
+type ContentMatch struct {
+	Line int    `json:"line"` // 1-based
+	Text string `json:"text"` // the line, shortened around the match
 }
 
 // FindResult holds the matches of a Find.
@@ -66,10 +79,22 @@ type FindResult struct {
 	Entries   []Entry `json:"entries"`
 	Truncated bool    `json:"truncated"`
 	Scanned   int64   `json:"scanned"`
+	// Matches holds the first matching line per path for content searches.
+	Matches map[string]ContentMatch `json:"matches,omitempty"`
+	// ContentSkipped counts files that met the other criteria but weren't
+	// searched: too large, binary or unreadable.
+	ContentSkipped int64 `json:"contentSkipped,omitempty"`
 }
 
-// MaxFindResults caps the matches Find returns.
-const MaxFindResults = 5000
+const (
+	// MaxFindResults caps the matches Find returns.
+	MaxFindResults = 5000
+	// DefaultContentMaxSize is the largest file a content search reads
+	// unless the query says otherwise; MaxContentMaxSize is the ceiling.
+	DefaultContentMaxSize = 4 << 20
+	MaxContentMaxSize     = 64 << 20
+	maxContentQuery       = 256
+)
 
 // Validate checks a query before it is run.
 func (q FindQuery) Validate() error {
@@ -82,6 +107,15 @@ func (q FindQuery) Validate() error {
 	case "", TypeFile, TypeDir, TypeSymlink, TypeFIFO, TypeSocket, TypeBlock, TypeChar:
 	default:
 		return fmt.Errorf("%w: unknown type %q", ErrInvalidArgument, q.Type)
+	}
+	if len(q.Content) > maxContentQuery {
+		return fmt.Errorf("%w: content search text is longer than %d bytes", ErrInvalidArgument, maxContentQuery)
+	}
+	if strings.ContainsAny(q.Content, "\r\n") {
+		return fmt.Errorf("%w: content search text must be a single line", ErrInvalidArgument)
+	}
+	if m := q.ContentMaxSize; m != nil && (*m <= 0 || *m > MaxContentMaxSize) {
+		return fmt.Errorf("%w: content size limit must be between 1 byte and %d MiB", ErrInvalidArgument, MaxContentMaxSize>>20)
 	}
 	return nil
 }

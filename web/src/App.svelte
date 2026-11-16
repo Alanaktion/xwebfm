@@ -126,7 +126,9 @@
     const res = await api.jobs.result<FindResult>(done.id)
     target.showResults(res, label)
     status = {
-      text: `${res.entries.length}${res.truncated ? '+' : ''} matches among ${res.scanned.toLocaleString()} items`,
+      text:
+        `${res.entries.length}${res.truncated ? '+' : ''} matches among ${res.scanned.toLocaleString()} items` +
+        (res.contentSkipped ? ` (${res.contentSkipped.toLocaleString()} files too large, binary or unreadable to search inside)` : ''),
       error: false,
     }
     api.jobs.dismiss(done.id).catch(() => {})

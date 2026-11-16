@@ -1,5 +1,5 @@
 import { SvelteMap, SvelteSet } from 'svelte/reactivity'
-import { api, type Entry, type FindResult, type FSInfo } from './api'
+import { api, type ContentMatch, type Entry, type FindResult, type FSInfo } from './api'
 import { joinPath, parentPath } from './format'
 import { loadSetting, persist, settings } from './settings.svelte'
 
@@ -22,6 +22,8 @@ export interface PaneResults {
   label: string
   root: string
   truncated: boolean
+  /** Matching lines by path, for content searches. */
+  matches?: Record<string, ContentMatch>
 }
 
 /** A row in a pane: a real entry, or the ".." link to the parent. */
@@ -141,7 +143,7 @@ export class PaneState {
 
   /** Shows search results in place of the listing. */
   showResults(res: FindResult, label: string) {
-    this.results = { label, root: res.root, truncated: res.truncated }
+    this.results = { label, root: res.root, truncated: res.truncated, matches: res.matches }
     this.resultEntries = res.entries
     this.selected.clear()
     this.cursor = 0

@@ -155,6 +155,16 @@ export interface FindQuery {
   worldWritable?: boolean
   setuid?: boolean
   crossMounts?: boolean
+  /** Text to find inside regular text files (case-insensitive). */
+  content?: string
+  /** Largest file a content search reads, in bytes (server default 4 MiB). */
+  contentMaxSize?: number
+}
+
+/** The first line of a file that matched a content search. */
+export interface ContentMatch {
+  line: number
+  text: string
 }
 
 export interface FindResult {
@@ -162,6 +172,10 @@ export interface FindResult {
   entries: Entry[]
   truncated: boolean
   scanned: number
+  /** First matching line per path, for content searches. */
+  matches?: Record<string, ContentMatch>
+  /** Files not searched for content: too large, binary or unreadable. */
+  contentSkipped?: number
 }
 
 export type JobRequest =

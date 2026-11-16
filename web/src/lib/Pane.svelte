@@ -346,6 +346,10 @@
                 <span aria-hidden="true">{icon[e.type] ?? '•'}</span>
                 {pane.results ? relative(e.path) : e.name}{#if e.type === 'dir'}/{/if}
                 {#if e.linkTarget}<span class="muted">→ {e.linkTarget}</span>{/if}
+                {#if pane.results?.matches?.[e.path]}
+                  {@const m = pane.results.matches[e.path]}
+                  <div class="snippet mono" title="Line {m.line}: {m.text}"><span class="muted">{m.line}:</span> {m.text}</div>
+                {/if}
               </td>
               {#each shown as c (c.key)}
                 {#if c.key === 'size'}
@@ -437,6 +441,7 @@
   tr.droptarget td { background: var(--accent); color: #fff; }
   .num { text-align: right; }
   .name { width: 100%; white-space: normal; word-break: break-all; }
+  .snippet { font-size: 12px; opacity: 0.85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; min-width: 100%; }
   .muted { color: var(--muted); }
   .empty { text-align: center; padding: 24px; }
   .hidden { display: none; }

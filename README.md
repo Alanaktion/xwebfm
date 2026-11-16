@@ -38,7 +38,8 @@ reflink copies.
   another browser tab changes a directory they show
 - **Find & disk usage**: an ncdu-style usage view with drill-down and a
   per-owner breakdown (stays on one filesystem, hard links counted once);
-  search by name, type, owner, size and age, with presets for files whose
+  search by name, type, owner, size and age (plus opt-in, case-insensitive
+  search inside text files up to a size limit), with presets for files whose
   owner/group no longer exists, files not owned by the folder's owner,
   world-writable and setuid/setgid files; free space per pane
 - **Permission helpers**: "fix owner" (recursively give a tree its own or

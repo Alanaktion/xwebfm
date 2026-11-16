@@ -5,6 +5,7 @@ package fsops
 import (
 	"context"
 	"errors"
+	"os"
 	"path"
 	"sort"
 	"strings"
@@ -109,6 +110,15 @@ func (f *FS) Find(ctx context.Context, root string, q FindQuery, prog *Progress)
 	if q.Limit <= 0 || q.Limit > MaxFindResults {
 		q.Limit = MaxFindResults
 	}
+	var content *contentSearcher
+	contentMax := int64(DefaultContentMaxSize)
+	if q.Content != "" {
+		content = newContentSearcher(q.Content)
+		if q.ContentMaxSize != nil {
+			contentMax = *q.ContentMaxSize
+		}
+		res.Matches = map[string]ContentMatch{}
+	}
 	pattern := strings.ToLower(q.Name)
 	substring := pattern != "" && !strings.ContainsAny(pattern, "*?[")
 
@@ -167,6 +177,41 @@ func (f *FS) Find(ctx context.Context, root string, q FindQuery, prog *Progress)
 		return true
 	}
 
+	// searchContent reads the regular file behind the O_PATH handle efd;
+	// it runs last, only for entries that met every other criterion.
+	searchContent := func(efd int, fp string, st *unix.Stat_t) bool {
+		if st.Mode&unix.S_IFMT != unix.S_IFREG {
+			return false
+		}
+		if st.Size > contentMax {
+			res.ContentSkipped++
+			return false
+		}
+		prog.setCurrent(fp)
+		// Reopen the handle itself rather than the path, so nothing is
+		// re-resolved; avoid updating atime where we're allowed to.
+		fd, err := unix.Open(procPath(efd), unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOATIME, 0)
+		if err == unix.EPERM {
+			fd, err = unix.Open(procPath(efd), unix.O_RDONLY|unix.O_CLOEXEC, 0)
+		}
+		if err != nil {
+			res.ContentSkipped++
+			return false
+		}
+		file := os.NewFile(uintptr(fd), fp)
+		defer file.Close()
+		m, found, binary, err := content.search(file, st.Size)
+		if err != nil || binary {
+			res.ContentSkipped++
+			return false
+		}
+		prog.addBytes(st.Size)
+		if found {
+			res.Matches[fp] = m
+		}
+		return found
+	}
+
 	err = walk(ctx, fd, root, true, func(efd int, fp string, st *unix.Stat_t) error {
 		if fp == root {
 			return nil
@@ -176,9 +221,10 @@ func (f *FS) Find(ctx context.Context, root string, q FindQuery, prog *Progress)
 		if res.Scanned%256 == 0 {
 			prog.setCurrent(fp)
 		}
-		if match(fp, st) {
+		if match(fp, st) && (content == nil || searchContent(efd, fp, st)) {
 			if len(res.Entries) >= q.Limit {
 				res.Truncated = true
+				delete(res.Matches, fp)
 				return errStopWalk
 			}
 			e, err := f.entryAt(efd, "", fp)

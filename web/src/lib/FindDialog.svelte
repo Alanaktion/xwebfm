@@ -37,6 +37,9 @@
   let worldWritable = $state(false)
   let setuid = $state(false)
   let crossMounts = $state(false)
+  let searchContent = $state(false)
+  let content = $state('')
+  let contentMax = $state('4')
   let busy = $state(false)
   let error = $state('')
 
@@ -65,6 +68,10 @@
       const newer = num(newerDays, 'age')
       const older = num(olderDays, 'age')
       const day = 86400_000
+      const text = searchContent ? content.trim() : ''
+      if (searchContent && !text) throw new Error('Enter the text to search for inside files')
+      const cmax = text ? num(contentMax, 'content size limit') : undefined
+      if (cmax !== undefined && (cmax <= 0 || cmax > 64)) throw new Error('Content size limit must be between 0 and 64 MiB')
       query = {
         name: name.trim() || undefined,
         type: type || undefined,
@@ -79,6 +86,8 @@
         worldWritable: worldWritable || undefined,
         setuid: setuid || undefined,
         crossMounts: crossMounts || undefined,
+        content: text || undefined,
+        contentMaxSize: cmax === undefined ? undefined : Math.round(cmax * units.MiB),
       }
     } catch (e) {
       error = (e as Error).message
@@ -86,6 +95,7 @@
     }
     const parts = [
       query.name && `“${query.name}”`,
+      query.content && `containing “${query.content}”`,
       orphaned && 'orphaned',
       foreignOwner && `not owned by ${rootOwner}`,
       worldWritable && 'world-writable',
@@ -107,6 +117,25 @@
   <label for="find-name">Name <span class="muted">(* and ? wildcards; plain text matches anywhere)</span></label>
   <!-- svelte-ignore a11y_autofocus -->
   <input id="find-name" bind:value={name} autocomplete="off" style="width: 100%" autofocus />
+
+  <label class="check"><input type="checkbox" bind:checked={searchContent} /> Also search text inside files</label>
+  {#if searchContent}
+    <div class="content">
+      <!-- svelte-ignore a11y_autofocus -->
+      <input
+        id="find-content"
+        bind:value={content}
+        autocomplete="off"
+        placeholder="Text to find (case-insensitive)"
+        aria-label="Text to find inside files"
+        autofocus
+      />
+      <span class="pair">
+        up to <input bind:value={contentMax} inputmode="decimal" size="4" aria-label="Largest file to search, MiB" /> MiB per file
+      </span>
+      <p class="muted hint">Only regular text files are read; binary files and larger files are skipped. Slower than a name search on big trees.</p>
+    </div>
+  {/if}
 
   <div class="grid">
     <label for="find-type">Type</label>
@@ -159,4 +188,7 @@
   legend { color: var(--muted); font-size: 12px; }
   fieldset label { margin: 4px 0; }
   .muted { color: var(--muted); font-weight: normal; }
+  .content { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin: 4px 0 0 22px; }
+  .content #find-content { flex: 1; min-width: 200px; }
+  .hint { flex-basis: 100%; margin: 0; font-size: 12px; }
 </style>

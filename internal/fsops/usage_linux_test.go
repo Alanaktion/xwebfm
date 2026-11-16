@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -117,6 +118,68 @@ func TestFind(t *testing.T) {
 	}
 	if _, err := f.Find(ctx, "/r", FindQuery{Name: "["}, nil); !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("bad pattern: %v", err)
+	}
+}
+
+func TestFindContent(t *testing.T) {
+	f, dir := newTestFS(t)
+	w := func(name string, data []byte) {
+		p := filepath.Join(dir, "r", name)
+		must(t, os.MkdirAll(filepath.Dir(p), 0o755))
+		must(t, os.WriteFile(p, data, 0o644))
+	}
+	w("a.txt", []byte("first line\n\tThe Quick brown fox\n"))
+	w("sub/b.md", []byte("no match here\n"))
+	w("sub/quick-name.txt", []byte("nothing\n"))
+	w("bin.dat", append([]byte("quick brown"), 0, 1, 2))
+	w("big.log", []byte(strings.Repeat("x", 100)+"quick brown\n"))
+	w("long.txt", []byte(strings.Repeat("a", 500)+"QUICK BROWN"+strings.Repeat("b", 500)))
+	must(t, os.Symlink("a.txt", filepath.Join(dir, "r", "link")))
+
+	limit := int64(64)
+	res, err := f.Find(ctx, "/r", FindQuery{Content: "quick BROWN", ContentMaxSize: &limit}, nil)
+	must(t, err)
+	var got []string
+	for _, e := range res.Entries {
+		got = append(got, e.Name)
+	}
+	slices.Sort(got)
+	if want := []string{"a.txt"}; !slices.Equal(got, want) {
+		t.Errorf("content: got %v, want %v", got, want)
+	}
+	if m := res.Matches["/r/a.txt"]; m.Line != 2 || m.Text != "The Quick brown fox" {
+		t.Errorf("match %+v", m)
+	}
+	// bin.dat is binary; big.log and long.txt exceed the 64-byte limit.
+	if res.ContentSkipped != 3 {
+		t.Errorf("skipped %d, want 3", res.ContentSkipped)
+	}
+
+	res, err = f.Find(ctx, "/r", FindQuery{Content: "quick brown"}, nil)
+	must(t, err)
+	if len(res.Entries) != 3 || res.ContentSkipped != 1 {
+		t.Errorf("default limit: %d entries, %d skipped", len(res.Entries), res.ContentSkipped)
+	}
+	if m := res.Matches["/r/long.txt"]; len(m.Text) > maxSnippet+8 || !strings.Contains(m.Text, "QUICK BROWN") ||
+		!strings.HasPrefix(m.Text, "…") || !strings.HasSuffix(m.Text, "…") {
+		t.Errorf("long snippet %q", m.Text)
+	}
+
+	// Name and content criteria combine.
+	res, err = f.Find(ctx, "/r", FindQuery{Name: "*.txt", Content: "nothing"}, nil)
+	must(t, err)
+	if len(res.Entries) != 1 || res.Entries[0].Name != "quick-name.txt" {
+		t.Errorf("name+content: %+v", res.Entries)
+	}
+
+	for _, q := range []FindQuery{
+		{Content: "two\nlines"},
+		{Content: strings.Repeat("x", 300)},
+		{Content: "x", ContentMaxSize: new(int64)},
+	} {
+		if err := q.Validate(); !errors.Is(err, ErrInvalidArgument) {
+			t.Errorf("%+v: %v", q, err)
+		}
 	}
 }
 
